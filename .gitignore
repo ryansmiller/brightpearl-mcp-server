@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Credentials & config — never commit
+.env
+credentials/
+*.json.key
+service-account*.json
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS
+.DS_Store
