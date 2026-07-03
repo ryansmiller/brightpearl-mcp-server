@@ -87,11 +87,12 @@ Each tier's request volume is budgeted against the 200/min limit; the rate limit
 ## Phases
 
 ### Phase 0 — Prerequisites (manual, guided)
-- [ ] Create GCP project, attach billing, enable BigQuery + BigQuery Storage Write + Secret Manager + Cloud Run APIs
+- [x] Create GCP project (`brightpearl-mcp-server`), attach billing, enable BigQuery + Storage Write + Secret Manager + Cloud Run + Scheduler + Tasks + Cloud Build + Artifact Registry APIs
+- [x] BigQuery dataset `brightpearl` created (US region)
 - [ ] `gcloud auth application-default login` for local dev; service account for deployment
-- [ ] Create a Brightpearl **private app** (Settings → API → Private apps) → record `app-ref` and `account-token`
-- [ ] Record Brightpearl account code and datacenter (base URL: `https://{datacenter}.brightpearlconnect.com/public-api/{account-code}/`)
-- [ ] Fill in `.env` from `.env.example`
+- [x] Create a Brightpearl **private app** (Settings → API → Private apps) → record `app-ref` and `account-token`
+- [x] Record Brightpearl account code and datacenter (base URL: `https://{datacenter}.brightpearlconnect.com/public-api/{account-code}/`)
+- [x] Fill in `.env` from `.env.example`
 
 ### Phase 1 — Brightpearl API client (`src/brightpearl_client/`)
 - [ ] Config: account code, datacenter, auth headers (`brightpearl-app-ref`, `brightpearl-account-token`)
@@ -144,3 +145,4 @@ Each tier's request volume is budgeted against the 200/min limit; the rate limit
 ## Status log
 
 - **2026-07-03** — Project kicked off: gameplan + CLAUDE.md written, scaffold created, repo pushed to GitHub. Next: Phase 0 prerequisites.
+- **2026-07-03 (later)** — Phase 0 nearly complete: GCP project `brightpearl-mcp-server` created with billing (freed a billing slot by unlinking dormant `alpine-task-194105`), APIs enabled, dataset `brightpearl` created, Brightpearl private-app credentials in `.env`. Remaining: ADC login. Next: Phase 1 (Brightpearl API client).
