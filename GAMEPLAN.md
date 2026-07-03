@@ -95,13 +95,15 @@ Each tier's request volume is budgeted against the 200/min limit; the rate limit
 - [x] Fill in `.env` from `.env.example`
 
 ### Phase 1 — Brightpearl API client (`src/brightpearl_client/`)
-- [ ] Config: account code, datacenter, auth headers (`brightpearl-app-ref`, `brightpearl-account-token`)
-- [ ] Rate limiter: token bucket against 200/min, reads `brightpearl-requests-remaining` / `brightpearl-next-throttle-period`, reserves headroom for webhooks + live calls
-- [ ] Retry with backoff on 503 (throttle) and transient failures
-- [ ] Generic resource-search wrapper: pagination, column metadata, `updatedOn` filters
-- [ ] Multi-ID GET support (`/order/123,456,789`) with ID-range chunking
-- [ ] Typed accessors per service: Contact, Order, Product, Warehouse, Accounting, Pricing
-- [ ] Unit tests against recorded fixtures (no live API in CI)
+- [x] Config: account code, datacenter, auth headers (`brightpearl-app-ref`, `brightpearl-account-token`)
+- [x] Rate limiter: token bucket against 200/min, reads `brightpearl-requests-remaining` / `brightpearl-next-throttle-period`, reserves headroom for webhooks + live calls (priority acquire)
+- [x] Retry with backoff on 503 (throttle) and transient failures
+- [x] Generic resource-search wrapper: pagination, column metadata, filter passthrough (incl. `updatedOn`)
+- [x] Multi-ID GET support (`/order/123,456,789`) with ID-range chunking
+- [x] Resource accessors: orders, products, contacts, goods-out notes (generic `ResourceAPI`; more added as Phase 2 needs them)
+- [x] Unit tests with mocked HTTP (respx); live smoke script (`scripts/live_smoke.py`) verified against production account (242,799 orders visible)
+
+Learned from live API: order-search has no `reference` column — it's `customerRef`; search pages return 500 rows.
 
 ### Phase 2 — BigQuery schema + batch sync (`src/sync/`)
 - [ ] Dataset `brightpearl` (US region) + table DDL per schema principles above
@@ -146,3 +148,4 @@ Each tier's request volume is budgeted against the 200/min limit; the rate limit
 
 - **2026-07-03** — Project kicked off: gameplan + CLAUDE.md written, scaffold created, repo pushed to GitHub. Next: Phase 0 prerequisites.
 - **2026-07-03 (later)** — Phase 0 nearly complete: GCP project `brightpearl-mcp-server` created with billing (freed a billing slot by unlinking dormant `alpine-task-194105`), APIs enabled, dataset `brightpearl` created, Brightpearl private-app credentials in `.env`. Remaining: ADC login. Next: Phase 1 (Brightpearl API client).
+- **2026-07-03 (evening)** — Phase 0 complete (ADC verified). Phase 1 complete: async client with shared rate limiter, 7 unit tests passing, live smoke test pulled real orders. Next: Phase 2 (BigQuery schema + batch sync).
