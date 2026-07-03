@@ -89,7 +89,7 @@ Each tier's request volume is budgeted against the 200/min limit; the rate limit
 ### Phase 0 — Prerequisites (manual, guided)
 - [x] Create GCP project (`brightpearl-mcp-server`), attach billing, enable BigQuery + Storage Write + Secret Manager + Cloud Run + Scheduler + Tasks + Cloud Build + Artifact Registry APIs
 - [x] BigQuery dataset `brightpearl` created (US region)
-- [ ] `gcloud auth application-default login` for local dev; service account for deployment
+- [x] `gcloud auth application-default login` for local dev (service account comes with Phase 4 deployment)
 - [x] Create a Brightpearl **private app** (Settings → API → Private apps) → record `app-ref` and `account-token`
 - [x] Record Brightpearl account code and datacenter (base URL: `https://{datacenter}.brightpearlconnect.com/public-api/{account-code}/`)
 - [x] Fill in `.env` from `.env.example`
