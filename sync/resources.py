@@ -27,6 +27,12 @@ SEARCH_DUMPS: dict[str, dict] = {
         "incremental": ("id", "paymentId"),
         "tier": "warm",
     },
+    "supplier_payments": {
+        "search": ("accounting-service", "supplier-payment"),
+        "key": "paymentId",
+        "incremental": ("id", "paymentId"),
+        "tier": "warm",
+    },
     "goods_movements": {
         "search": ("warehouse-service", "goods-movement"),
         "key": "goodsMovementId",
@@ -107,6 +113,36 @@ SEARCH_DUMPS: dict[str, dict] = {
         "incremental": ("full", None),
         "tier": "cold",
     },
+    "categories": {
+        "search": ("product-service", "brightpearl-category"),
+        "key": "id",
+        "incremental": ("full", None),
+        "tier": "cold",
+    },
+    "warehouse_locations": {
+        "search": ("warehouse-service", "location"),
+        "key": "id",
+        "incremental": ("full", None),
+        "tier": "cold",
+    },
+    "product_options": {
+        "search": ("product-service", "option"),
+        "key": "id",
+        "incremental": ("full", None),
+        "tier": "cold",
+    },
+    "product_option_values": {
+        "search": ("product-service", "option-value"),
+        "key": "id",
+        "incremental": ("full", None),
+        "tier": "cold",
+    },
+    "contact_group_members": {
+        "search": ("contact-service", "contact-group-member"),
+        "key": "id",
+        "incremental": ("full", None),
+        "tier": "cold",
+    },
 }
 
 # Plain GET collection endpoints → truncate-and-reload reference tables
@@ -121,4 +157,5 @@ REFERENCE_GETS: dict[str, str] = {
     "contact_tags": "contact-service/tag",
     "price_lists": "product-service/price-list",
     "channel_brands": "product-service/channel-brand",
+    "channels": "product-service/channel",
 }

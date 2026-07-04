@@ -106,21 +106,30 @@ lead_sources, contact_tags, price_lists, channel_brands.
 **Derived** (fan-out from products): product_prices (per price list),
 product_availability (per warehouse, stock-tracked only).
 
+**Endpoint audit (2026-07-03, against official API docs for all services):**
+Later probe unlocked and synced: supplier_payments, categories
+(brightpearl-category-search), warehouse_locations, product_options,
+product_option_values, contact_group_members, channels.
+
 **Known gaps (tracked, not yet implemented):**
-- Order/Product/Contact **custom-field values** — high value (RollSize, MOQ);
-  needs custom-field metadata endpoints; SyncHub has these
-- Journal **detail GETs** (accounting-service/journal/{id}) if per-line data
-  beyond journal-search is ever needed
-- Stock transfers (262 rows; no search endpoint found — needs endpoint research)
-- Product categories (227) & product groups (9.6k) — endpoint paths 404'd on
-  probe; needs research
-- Order custom rows like landed-cost estimates, order reservations, warehouse
-  locations, product variation options (SyncHub offers these as "expensive
-  upgrades"; add on demand)
-- Supplier payments (SyncHub 7k — likely a paymentType filter on
-  customer-payment-search; verify)
-- Goods-in notes (order goods notes) — probe found no goods-in-search;
-  research order-service/goods-note endpoints
+- Order/Product/Contact **custom-field values** — highest value (RollSize,
+  MOQ); metadata endpoints exist per docs but paths 404'd on first probe
+  (`custom-field-metadata`); needs path research
+- `supplier_payments` search returned exactly 500 vs SyncHub's 7,001 —
+  investigate a default server-side filter and paginate past it
+- **Order notes** (order-service order-note GET) and **contact postal
+  addresses** (GET per address id; order payloads embed delivery addresses so
+  partially covered)
+- **Product suppliers** (SyncHub 77k; product-supplier GET path 404'd on
+  probe — likely per-product subresource; check raw product payloads first)
+- **Goods-in notes** (docs list Goods-In Note SEARCH; both probed paths
+  404'd — needs path research)
+- **Stock transfers** (GET by id works, no search; derive ids from
+  goods_movements or order goods notes)
+- Journal **detail GETs** if per-line data beyond journal-search is needed
+- Low value / on demand: landed-cost estimates, reservations, zones,
+  drop-ship notes, contact balances (good live-MCP-tool candidate),
+  all-transaction-statement (404'd), product groups (GET semantics unclear)
 
 ## Phases
 
