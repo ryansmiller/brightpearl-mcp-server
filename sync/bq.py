@@ -76,7 +76,10 @@ class BigQueryWriter:
         rows: list[dict[str, Any]],
         schema: list[bigquery.SchemaField] | None = None,
     ) -> str:
-        staging = self._table_ref(f"_stg_{name}")
+        # Unique per operation: a webhook flush and a scheduled tick can hit
+        # the same table concurrently and must not clobber each other's
+        # staging. Callers drop the table in a finally block.
+        staging = self._table_ref(f"_stg_{name}_{uuid.uuid4().hex[:8]}")
         self._load_json(
             rows,
             staging,
@@ -86,6 +89,9 @@ class BigQueryWriter:
             ),
         )
         return staging
+
+    def _drop(self, table_ref: str) -> None:
+        self.client.delete_table(table_ref, not_found_ok=True)
 
     def truncate_load(
         self, name: str, rows: list[dict[str, Any]], schema: list[bigquery.SchemaField]
@@ -139,7 +145,10 @@ class BigQueryWriter:
         """
         if name == "sync_state":
             sql = sql.replace("ORDER BY when_upserted DESC", "ORDER BY last_run_at DESC")
-        self.client.query_and_wait(sql)
+        try:
+            self.client.query_and_wait(sql)
+        finally:
+            self._drop(staging)
         return len(rows)
 
     def replace_children(
@@ -150,21 +159,30 @@ class BigQueryWriter:
         rows: list[dict[str, Any]],
         schema: list[bigquery.SchemaField] | None = None,
     ) -> int:
-        """Replace all child rows for the given parents (handles deleted lines)."""
+        """Replace all child rows for the given parents (handles deleted lines).
+
+        Delete + insert run in one BigQuery transaction so a crash between
+        them can't leave parents without their rows.
+        """
         if not parent_ids:
             return 0
         target = self._table_ref(name)
-        if rows:
-            staging = self._load_staging(name, rows, schema)
-            insert_sql = f"INSERT INTO `{target}` SELECT * FROM `{staging}`"
-        else:
-            insert_sql = None
+        cols = ", ".join(f.name for f in (schema or TABLES[name]["schema"]))
         ids = ", ".join(str(i) for i in parent_ids)
-        self.client.query_and_wait(
-            f"DELETE FROM `{target}` WHERE {parent_field} IN ({ids})"
-        )
-        if insert_sql:
-            self.client.query_and_wait(insert_sql)
+        delete_sql = f"DELETE FROM `{target}` WHERE {parent_field} IN ({ids});"
+        if not rows:
+            self.client.query_and_wait(delete_sql)
+            return 0
+        staging = self._load_staging(name, rows, schema)
+        try:
+            self.client.query_and_wait(
+                "BEGIN TRANSACTION;\n"
+                + delete_sql
+                + f"\nINSERT INTO `{target}` ({cols}) SELECT {cols} FROM `{staging}`;\n"
+                + "COMMIT TRANSACTION;"
+            )
+        finally:
+            self._drop(staging)
         return len(rows)
 
     def query(self, sql: str) -> list[dict[str, Any]]:

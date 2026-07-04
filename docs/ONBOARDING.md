@@ -50,6 +50,7 @@ Claude can also write arbitrary read-only SQL against the warehouse
 
 - The server is **read-only** — nothing can write back to Brightpearl or
   modify the warehouse through Claude.
-- Every tool call is logged to the `mcp_audit` table (who asked what, when).
+- Every tool call is logged to the `mcp_audit` table (tool, arguments, time).
+  The bearer token is shared, so entries are not attributed to individuals yet.
 - Live API lookups share Brightpearl's 200 requests/min budget with
   ShipStation and the website integration — they're throttled automatically.

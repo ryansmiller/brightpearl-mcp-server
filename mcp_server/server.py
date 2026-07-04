@@ -70,7 +70,7 @@ def _audit(tool: str, args: dict[str, Any], ok: bool, detail: str = "") -> None:
 
 def _rows_to_result(rows: list[dict[str, Any]]) -> str:
     out = [dict(r) for r in rows[:MAX_ROWS]]
-    note = f"\n({len(rows)} rows total, showing first {MAX_ROWS})" if len(rows) > MAX_ROWS else ""
+    note = f"\n(more rows exist; showing first {MAX_ROWS})" if len(rows) > MAX_ROWS else ""
     return json.dumps(out, default=str, indent=1) + note
 
 
@@ -78,7 +78,21 @@ def _query(sql: str, params: list | None = None) -> list[dict[str, Any]]:
     job_config = bigquery.QueryJobConfig(
         maximum_bytes_billed=MAX_BYTES_BILLED, query_parameters=params or []
     )
-    return [dict(r) for r in _bq.query_and_wait(sql, job_config=job_config)]
+    rows = _bq.query_and_wait(sql, job_config=job_config, max_results=MAX_ROWS + 1)
+    return [dict(r) for r in rows]
+
+
+def _assert_only_brightpearl(sql: str) -> None:
+    """Dry-run the query and reject references outside our dataset."""
+    job = _bq.query(
+        sql, job_config=bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
+    )
+    for t in job.referenced_tables:
+        if t.project != PROJECT or t.dataset_id != DATASET:
+            raise PermissionError(
+                f"query references {t.project}.{t.dataset_id}.{t.table_id}; "
+                f"only the {DATASET} dataset is allowed"
+            )
 
 
 _SQL_FORBIDDEN = re.compile(
@@ -103,6 +117,7 @@ def run_bigquery_sql(sql: str) -> str:
         _audit("run_bigquery_sql", {"sql": sql}, False, "rejected: forbidden keyword")
         return "Error: statement contains a write/DDL keyword; only reads are allowed."
     try:
+        _assert_only_brightpearl(stripped)
         rows = _query(stripped)
         _audit("run_bigquery_sql", {"sql": sql}, True, f"{len(rows)} rows")
         return _rows_to_result(rows)
@@ -159,6 +174,7 @@ def query_sales(
     }
     if group_by not in dims:
         return f"Error: group_by must be one of {list(dims)}"
+    top_n = max(1, min(top_n, MAX_ROWS))
     rows = _query(
         f"""
         SELECT {dims[group_by]} AS {group_by},

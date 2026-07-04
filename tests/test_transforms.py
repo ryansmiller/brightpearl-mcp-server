@@ -52,7 +52,7 @@ def test_order_transform():
     assert head["order_id"] == 100039
     assert head["parent_order_id"] is None  # 0 → NULL
     assert head["order_type_code"] == "SO"
-    assert head["total_net"] == 1745.50
+    assert head["total_net"] == "1745.50"  # money stays string → exact NUMERIC
     assert head["customer_contact_id"] == 2329
     assert head["delivery_state"] == "CT"
     assert head["invoice_reference"] == "SI-504126"
@@ -62,8 +62,8 @@ def test_order_transform():
     line = lines[0]
     assert line["order_row_id"] == 81
     assert line["order_id"] == 100039
-    assert line["quantity"] == 2.0
-    assert line["row_net"] == 16.0
+    assert line["quantity"] == "2.0000"
+    assert line["row_net"] == "16.0000"
     assert line["product_sku"] == "SELECT_130-1080-07"
     assert line["product_options"] == {"Color": "Bronze"}
 

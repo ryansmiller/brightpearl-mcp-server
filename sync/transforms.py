@@ -1,7 +1,7 @@
 """Brightpearl API payloads → BigQuery row dicts.
 
-Money and quantity values arrive from the API as strings ("1745.50"); they are
-converted to float here. Timestamps stay as ISO-8601 strings with offsets,
+Money and quantity values arrive from the API as strings ("1745.50") and are
+passed through unchanged — BigQuery parses NUMERIC from strings exactly. Timestamps stay as ISO-8601 strings with offsets,
 which BigQuery load jobs parse into TIMESTAMP natively. The complete payload is
 preserved in raw_payload (JSON) so no field is ever lost.
 """
@@ -10,10 +10,15 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-def _num(value: Any) -> float | None:
+def _num(value: Any) -> Any:
+    """Pass money/quantity values through unchanged (minus empty -> NULL).
+
+    BigQuery parses NUMERIC from strings exactly; converting through float
+    would risk precision loss for nothing.
+    """
     if value in (None, ""):
         return None
-    return float(value)
+    return value
 
 
 def _now() -> str:

@@ -14,6 +14,7 @@ Subscribe:  python -m sync.cli webhooks register --url https://.../webhook?token
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -118,6 +119,16 @@ class Ingestor:
         async with self.lock:
             batch, self.pending = dict(self.pending), defaultdict(set)
             movements, self.movements_pending = self.movements_pending, False
+        try:
+            await self._process(batch, movements)
+        finally:
+            # Events that arrived during processing would otherwise sit in
+            # pending until the NEXT webhook — reschedule ourselves.
+            async with self.lock:
+                if self.pending or self.movements_pending:
+                    self.flusher = asyncio.create_task(self._flush_later())
+
+    async def _process(self, batch: dict[str, set[int]], movements: bool) -> None:
         if movements:
             try:
                 n = await SearchDumpSyncer(self.bp, self.bq).sync("goods_movements")
@@ -146,7 +157,8 @@ ingestor: Ingestor | None = None
 
 def _check_token(request: Request) -> bool:
     expected = os.environ.get("WEBHOOK_TOKEN", "")
-    return bool(expected) and request.query_params.get("token") == expected
+    supplied = request.query_params.get("token", "")
+    return bool(expected) and hmac.compare_digest(supplied, expected)
 
 
 async def webhook(request: Request) -> JSONResponse:

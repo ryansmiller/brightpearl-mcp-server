@@ -16,6 +16,7 @@ from google.cloud import bigquery
 from brightpearl_client import BrightpearlClient, BrightpearlError
 
 from .bq import BigQueryWriter
+from .pipeline import SWEEP_OVERLAP
 from .resources import REFERENCE_GETS, SEARCH_DUMPS
 
 logger = logging.getLogger(__name__)
@@ -49,8 +50,12 @@ def _coerce(value: Any, bq_type: str) -> Any:
             return int(value[0]) if len(value) == 1 else None
         return int(value)
     if bq_type == "NUMERIC":
-        return float(value)
+        # BigQuery parses NUMERIC from strings exactly — never round-trip
+        # money through float
+        return value if isinstance(value, (int, float, str)) else str(value)
     if bq_type == "BOOL":
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes")
         return bool(value)
     if bq_type == "STRING" and not isinstance(value, str):
         return json.dumps(value)
@@ -105,8 +110,10 @@ class SearchDumpSyncer:
             if mode == "id" and last_id is not None:
                 filters[col] = f"{last_id + 1}/"
             elif mode == "updated" and last_ts is not None:
-                ts = last_ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-                filters[col] = f"{ts}/"
+                # overlap guards against late indexing / clock skew; upserts
+                # make re-reading the overlap free
+                since = last_ts.astimezone(timezone.utc) - SWEEP_OVERLAP
+                filters[col] = f"{since.strftime('%Y-%m-%dT%H:%M:%S.000Z')}/"
 
         schema: list[bigquery.SchemaField] | None = None
         buffer: list[dict] = []
@@ -129,6 +136,7 @@ class SearchDumpSyncer:
             if schema is None:
                 schema = self._schema_for(page.columns)
                 self.bq.ensure_table(table, schema)
+            watermark_col = snake(col) if col else None
             for api_row in page.results:
                 row = self._to_row(api_row, page.columns)
                 if truncate_mode:
@@ -137,6 +145,10 @@ class SearchDumpSyncer:
                     buffer.append(row)
                 if row.get(key) is not None and isinstance(row[key], int):
                     max_id = max(max_id or 0, row[key])
+                if mode == "updated" and watermark_col and row.get(watermark_col):
+                    ts = datetime.fromisoformat(str(row[watermark_col]))
+                    if max_ts is None or ts > max_ts:
+                        max_ts = ts
             if not truncate_mode and len(buffer) >= LOAD_CHUNK:
                 total += self.bq.upsert(table, buffer, schema, key)
                 logger.info("%s: %d rows merged (through result %d/%d)",
@@ -151,8 +163,6 @@ class SearchDumpSyncer:
         elif buffer:
             total += self.bq.upsert(table, buffer, schema, key)
 
-        if mode == "updated":
-            max_ts = datetime.now(timezone.utc)
         self._record(table, "full" if (full or truncate_mode) else mode, total, max_id, max_ts)
         logger.info("%s: done, %d rows", table, total)
         return total
