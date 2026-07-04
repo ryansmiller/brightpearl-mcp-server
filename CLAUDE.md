@@ -6,10 +6,13 @@ Natural-language access to East Coast Fabrics' Brightpearl ERP data: a sync pipe
 
 ## Layout
 
-- `src/brightpearl_client/` — Brightpearl API client: auth, rate limiting, resource search, typed service accessors
-- `src/sync/` — BigQuery schema, backfill/sweep jobs, webhook ingest
-- `src/mcp_server/` — FastMCP app and tools
+Flat layout — packages at the project root, imported from CWD when running locally. **Do not reintroduce a src/ layout or rely on editable installs**: a background agent on this Mac sets the macOS hidden flag on every `.pth` file in site-packages within seconds, and Python 3.13+ skips hidden `.pth` files, silently breaking editable-install imports.
+
+- `brightpearl_client/` — Brightpearl API client: auth, rate limiting, resource search, typed service accessors
+- `sync/` — BigQuery schema, transforms, backfill/sweep pipeline, CLI (`uv run python -m sync.cli`), webhook ingest
+- `mcp_server/` — FastMCP app and tools
 - `tests/` — pytest; unit tests use recorded fixtures, never the live API
+- `scripts/` — live smoke tests and one-off utilities
 
 ## Stack
 

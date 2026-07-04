@@ -21,16 +21,20 @@ dev = [
     "ruff>=0.5",
 ]
 
+# Flat layout, no src/: on this machine a background agent sets the macOS
+# hidden flag on every .pth file in site-packages within seconds, and Python
+# 3.13+ skips hidden .pth files — so editable installs silently break. Flat
+# layout lets local runs import from the project root without any .pth;
+# deployed images install the built wheel normally.
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/brightpearl_client", "src/sync", "src/mcp_server"]
+[tool.setuptools.packages.find]
+include = ["brightpearl_client*", "sync*", "mcp_server*"]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
