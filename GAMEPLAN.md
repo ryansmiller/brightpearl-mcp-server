@@ -193,7 +193,8 @@ Learned from live API: order-search has no `reference` column — it's `customer
 Notes: contact.* and order.created are not subscribable on this account (order.modified fires on creation; contacts ride the warm sweep). Connect remote Claude clients: `claude mcp add --transport http brightpearl https://mcp-server-243337884757.us-east4.run.app/mcp --header "Authorization: Bearer $MCP_BEARER_TOKEN"` (token in Secret Manager / .env).
 
 ### Phase 5 — Hardening
-- [ ] Staleness alerting (watermark budget exceeded → email/Slack)
+- [x] Staleness alerting: `/alert-check` (tier budgets hot 30m / warm 2h / cold 50h) on a 15-min schedule; STALENESS_ALERT log lines trigger a Cloud Monitoring policy → email ryan@eastcoastfabrics.com. First run immediately caught the reference-sync bookkeeping gap.
+- [ ] Deleted-record handling: product.destroyed / order deletions → is_deleted flags
 - [ ] Structured logging + error reporting
 - [ ] Integration tests; load-test the sweep within rate budget
 - [ ] Team onboarding docs (connecting Claude to the MCP server)
