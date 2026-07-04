@@ -125,14 +125,19 @@ class BigQueryWriter:
         return len(rows)
 
     def replace_children(
-        self, name: str, parent_field: str, parent_ids: list[int], rows: list[dict[str, Any]]
+        self,
+        name: str,
+        parent_field: str,
+        parent_ids: list[int],
+        rows: list[dict[str, Any]],
+        schema: list[bigquery.SchemaField] | None = None,
     ) -> int:
         """Replace all child rows for the given parents (handles deleted lines)."""
         if not parent_ids:
             return 0
         target = self._table_ref(name)
         if rows:
-            staging = self._load_staging(name, rows)
+            staging = self._load_staging(name, rows, schema)
             insert_sql = f"INSERT INTO `{target}` SELECT * FROM `{staging}`"
         else:
             insert_sql = None

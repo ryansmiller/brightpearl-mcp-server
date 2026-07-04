@@ -42,11 +42,23 @@ FLUSH_SECONDS = 3.0
 # contacts rely on the warm sweep.
 WEBHOOK_EVENTS = [
     "order.modified",
+    # Only fires for orders created via the newer sales-order POST endpoint —
+    # UI-created orders do NOT trigger it (per Ryan/docs). Kept as free
+    # insurance for future API integrations; order.modified covers UI orders.
+    "sales-order.created",
     "product.created", "product.modified",
+    # Stock-level change event (three-part code discovered from the account's
+    # existing WooCommerce integration subscriptions)
+    "product.modified.on-hand-modified",
     "goods-out-note.created", "goods-out-note.modified",
     "goods-in-note.created",
 ]
-RESOURCE_MAP = {"order": "orders", "product": "products", "contact": "contacts"}
+RESOURCE_MAP = {
+    "order": "orders",
+    "sales-order": "orders",
+    "product": "products",
+    "contact": "contacts",
+}
 # Goods-note events carry note ids, not order ids — they trigger an
 # incremental goods_movements dump instead of a detail fetch.
 MOVEMENT_TRIGGERS = {"goods-out-note", "goods-in-note"}
@@ -114,6 +126,10 @@ class Ingestor:
                     n, _ = await self.pipeline._load_orders(sorted(ids))
                 else:
                     n, _ = await self.pipeline._load_simple(name, sorted(ids))
+                if name == "products":
+                    # stock events arrive as product webhooks — keep the
+                    # per-warehouse availability table current too
+                    await DerivedSyncer(self.bp, self.bq).refresh_availability(sorted(ids))
                 logger.info("webhook flush: %s x%d upserted", name, n)
             except BrightpearlNotFound:
                 logger.warning("webhook flush: %s ids %s not found (deleted?)", name, ids)
@@ -198,7 +214,12 @@ async def register_webhooks(bp: BrightpearlClient, base_url: str) -> list[str]:
         "raisedOn": "${raised-on}",
     })
     existing = await list_webhooks(bp)
-    subscribed = {w.get("subscribeTo") for w in existing}
+    # other integrations (ShipStation, WooCommerce...) subscribe to the same
+    # events — dedupe on event AND destination, not event alone
+    subscribed = {
+        w.get("subscribeTo") for w in existing
+        if str(w.get("uriTemplate", "")).startswith(base_url.split("?")[0])
+    }
     created = []
     for event in WEBHOOK_EVENTS:
         if event in subscribed:

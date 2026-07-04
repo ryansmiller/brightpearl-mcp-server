@@ -98,6 +98,31 @@ class DerivedSyncer:
                 return {}
             raise
 
+    async def refresh_availability(self, product_ids: list[int]) -> int:
+        """Webhook-path partial refresh: replace availability rows for these products."""
+        rows = []
+        now = _now()
+        for i in range(0, len(product_ids), CHUNK):
+            payload = await self._fetch_availability(product_ids[i : i + CHUNK])
+            for pid, avail in payload.items():
+                for wid, w in (avail.get("warehouses") or {}).items():
+                    rows.append(
+                        {
+                            "product_id": int(pid),
+                            "warehouse_id": int(wid),
+                            "on_hand": w.get("onHand"),
+                            "allocated": w.get("allocated"),
+                            "in_stock": w.get("inStock"),
+                            "on_order": w.get("onOrder"),
+                            "when_upserted": now,
+                        }
+                    )
+        self.bq.ensure_table("product_availability", AVAILABILITY_SCHEMA)
+        return self.bq.replace_children(
+            "product_availability", "product_id", product_ids, rows,
+            schema=AVAILABILITY_SCHEMA,
+        )
+
     async def sync_availability(self) -> int:
         ids = self._product_ids("stock_tracked")
         rows = []
