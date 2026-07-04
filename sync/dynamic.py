@@ -219,5 +219,14 @@ class ReferenceSyncer:
             if isinstance(item, dict)
         ]
         n = self.bq.truncate_load(table, rows, REFERENCE_SCHEMA)
+        self.bq.upsert(
+            "sync_state",
+            [{
+                "resource": table,
+                "last_run_at": now,
+                "last_run_kind": "reference",
+                "last_run_rows": n,
+            }],
+        )
         logger.info("%s: %d reference rows", table, n)
         return n

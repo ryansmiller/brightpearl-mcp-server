@@ -196,6 +196,55 @@ async def healthz(request: Request) -> PlainTextResponse:
     return PlainTextResponse("ok")
 
 
+# Staleness budgets in minutes, by sweep tier. A resource is "stale" when its
+# sync_state.last_run_at is older than its budget — this measures sync HEALTH
+# (did the machinery run), not business activity, so quiet days don't alarm.
+TIER_BUDGET_MINUTES = {"hot": 30, "warm": 120, "cold": 60 * 50}
+
+
+def _resource_budgets() -> dict[str, int]:
+    from .pipeline import RESOURCES
+
+    budgets: dict[str, int] = {}
+    for name, spec in RESOURCES.items():
+        budgets[name] = TIER_BUDGET_MINUTES[spec["tier"]]
+    for name, spec in SEARCH_DUMPS.items():
+        budgets[name] = TIER_BUDGET_MINUTES[spec["tier"]]
+    for name in REFERENCE_GETS:
+        budgets[name] = TIER_BUDGET_MINUTES["cold"]
+    return budgets
+
+
+async def alert_check(request: Request) -> JSONResponse:
+    """Compare each resource's last_run_at against its tier budget.
+
+    Violations are logged at ERROR with the STALENESS_ALERT marker — a
+    Cloud Monitoring log-based alert policy emails on that string. Returning
+    them in the body lets get_data_freshness-style tooling reuse the check.
+    """
+    if not _check_token(request):
+        return JSONResponse({"error": "bad token"}, status_code=403)
+    budgets = _resource_budgets()
+    rows = ingestor.bq.query(
+        f"SELECT resource, TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), last_run_at, MINUTE) AS lag "
+        f"FROM `{ingestor.bq._table_ref('sync_state')}`"
+    )
+    seen = {r["resource"]: r["lag"] for r in rows}
+    violations = []
+    for resource, budget in budgets.items():
+        lag = seen.get(resource)
+        if lag is None:
+            violations.append({"resource": resource, "lag_minutes": None, "budget": budget,
+                               "problem": "never synced"})
+        elif lag > budget:
+            violations.append({"resource": resource, "lag_minutes": lag, "budget": budget,
+                               "problem": "stale"})
+    if violations:
+        logger.error("STALENESS_ALERT: %d resources stale: %s", len(violations),
+                     json.dumps(violations))
+    return JSONResponse({"ok": not violations, "violations": violations})
+
+
 def create_app() -> Starlette:
     global ingestor
     ingestor = Ingestor()
@@ -203,6 +252,7 @@ def create_app() -> Starlette:
         Route("/webhook", webhook, methods=["POST"]),
         Route("/tick/{tier}", tick, methods=["POST"]),
         Route("/health", healthz, methods=["GET"]),
+        Route("/alert-check", alert_check, methods=["POST", "GET"]),
     ])
 
 
