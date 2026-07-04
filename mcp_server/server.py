@@ -299,7 +299,7 @@ class BearerAuthMiddleware:
         self.token = token
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope.get("path") != "/healthz":
+        if scope["type"] == "http" and scope.get("path") != "/health":
             headers = dict(scope.get("headers") or [])
             auth = headers.get(b"authorization", b"").decode()
             if auth != f"Bearer {self.token}":

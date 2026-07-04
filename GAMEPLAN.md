@@ -183,11 +183,14 @@ Learned from live API: order-search has no `reference` column — it's `customer
 - [ ] End-to-end test from a Claude client over stdio
 
 ### Phase 4 — Remote deployment
-- [ ] Dockerfile (single image; entrypoints for MCP server, webhook ingest, sweep job)
-- [ ] Cloud Run services: `mcp-server`, `sync-ingest`; Cloud Run Job + Cloud Scheduler for sweeps
-- [ ] Secret Manager for Brightpearl credentials; least-privilege service accounts
-- [ ] Bearer-token auth on the MCP endpoint
-- [ ] Register webhooks against the deployed ingest URL
+- [x] Dockerfile (single image; per-service entrypoint override)
+- [x] Cloud Run us-east4: `mcp-server` (https://mcp-server-243337884757.us-east4.run.app, bearer auth) and `sync-ingest` (https://sync-ingest-243337884757.us-east4.run.app, token auth, max-instances=1 so the rate budget never splits)
+- [x] Cloud Scheduler → `/tick/{tier}`: hot */5min, warm */30min, cold daily 07:00 UTC
+- [x] Secret Manager: brightpearl-app-ref, brightpearl-account-token, webhook-token, mcp-bearer-token; `bp-runtime` SA (BigQuery dataEditor+jobUser, secretAccessor)
+- [x] Webhooks registered (verified subscribable set): order.modified, product.created/modified, goods-out-note.created/modified, goods-in-note.created — thin events → 3s batch buffer → multi-ID fetch → BigQuery; goods-note events trigger incremental goods_movements sweeps
+- [x] End-to-end verified: token auth enforced (401/403), test webhook → BigQuery upsert in ~8s, real Brightpearl events observed arriving, scheduler tick recorded a cloud-driven orders sweep
+
+Notes: contact.* and order.created are not subscribable on this account (order.modified fires on creation; contacts ride the warm sweep). Connect remote Claude clients: `claude mcp add --transport http brightpearl https://mcp-server-243337884757.us-east4.run.app/mcp --header "Authorization: Bearer $MCP_BEARER_TOKEN"` (token in Secret Manager / .env).
 
 ### Phase 5 — Hardening
 - [ ] Staleness alerting (watermark budget exceeded → email/Slack)

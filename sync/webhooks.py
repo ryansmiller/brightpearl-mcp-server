@@ -37,13 +37,19 @@ logger = logging.getLogger(__name__)
 
 FLUSH_SECONDS = 3.0
 
-# Which webhook events we subscribe to; resource-type → detail pipeline name
+# Events verified subscribable on this account (2026-07): contact.* and
+# order.created do not exist — order.modified fires on creation too, and
+# contacts rely on the warm sweep.
 WEBHOOK_EVENTS = [
-    "order.created", "order.modified",
+    "order.modified",
     "product.created", "product.modified",
-    "contact.created", "contact.modified",
+    "goods-out-note.created", "goods-out-note.modified",
+    "goods-in-note.created",
 ]
 RESOURCE_MAP = {"order": "orders", "product": "products", "contact": "contacts"}
+# Goods-note events carry note ids, not order ids — they trigger an
+# incremental goods_movements dump instead of a detail fetch.
+MOVEMENT_TRIGGERS = {"goods-out-note", "goods-in-note"}
 
 # Sweep tiers for /tick — sweeps for detail resources, dumps for the rest
 TIERS: dict[str, dict] = {
@@ -71,10 +77,17 @@ class Ingestor:
         self.bq = BigQueryWriter()
         self.pipeline = SyncPipeline(self.bp, self.bq)
         self.pending: dict[str, set[int]] = defaultdict(set)
+        self.movements_pending = False
         self.lock = asyncio.Lock()
         self.flusher: asyncio.Task | None = None
 
     async def enqueue(self, resource_type: str, ids: list[int]) -> None:
+        if resource_type in MOVEMENT_TRIGGERS:
+            async with self.lock:
+                self.movements_pending = True
+                if self.flusher is None or self.flusher.done():
+                    self.flusher = asyncio.create_task(self._flush_later())
+            return
         name = RESOURCE_MAP.get(resource_type)
         if not name:
             logger.info("ignoring webhook for unmapped resource %s", resource_type)
@@ -88,6 +101,13 @@ class Ingestor:
         await asyncio.sleep(FLUSH_SECONDS)
         async with self.lock:
             batch, self.pending = dict(self.pending), defaultdict(set)
+            movements, self.movements_pending = self.movements_pending, False
+        if movements:
+            try:
+                n = await SearchDumpSyncer(self.bp, self.bq).sync("goods_movements")
+                logger.info("webhook flush: goods_movements sweep, %d rows", n)
+            except Exception:
+                logger.exception("webhook-triggered goods_movements sweep failed")
         for name, ids in batch.items():
             try:
                 if name == "orders":
@@ -162,7 +182,7 @@ def create_app() -> Starlette:
     return Starlette(routes=[
         Route("/webhook", webhook, methods=["POST"]),
         Route("/tick/{tier}", tick, methods=["POST"]),
-        Route("/healthz", healthz, methods=["GET"]),
+        Route("/health", healthz, methods=["GET"]),
     ])
 
 
