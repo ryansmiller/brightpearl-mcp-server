@@ -41,7 +41,11 @@ FLUSH_SECONDS = 3.0
 # order.created do not exist — order.modified fires on creation too, and
 # contacts rely on the warm sweep.
 WEBHOOK_EVENTS = [
+    # order.modified verified firing in production logs; the order-status
+    # sub-event registered too (per Ryan) in case some status changes only
+    # emit the specific code. Duplicates are harmless (idempotent upserts).
     "order.modified",
+    "order.modified.order-status",
     # Only fires for orders created via the newer sales-order POST endpoint —
     # UI-created orders do NOT trigger it (per Ryan/docs). Kept as free
     # insurance for future API integrations; order.modified covers UI orders.
