@@ -128,6 +128,7 @@ TABLES: dict[str, dict] = {
         "schema": [
             bigquery.SchemaField("resource", "STRING", mode="REQUIRED"),
             bigquery.SchemaField("watermark_updated_on", "TIMESTAMP"),
+            bigquery.SchemaField("watermark_id", "INT64"),
             bigquery.SchemaField("last_run_at", "TIMESTAMP"),
             bigquery.SchemaField("last_run_kind", "STRING"),
             bigquery.SchemaField("last_run_rows", "INT64"),

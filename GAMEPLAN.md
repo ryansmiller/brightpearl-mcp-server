@@ -84,6 +84,44 @@ Each tier's request volume is budgeted against the 200/min limit; the rate limit
 - Per-table configurable historical backfill depth.
 - Observed scale (from SyncHub, 2026-07): ~243k orders, ~561k order rows, ~57k products — tiny for BigQuery; full backfill is cheap.
 
+## Coverage vs SyncHub (target: superset)
+
+Ryan provided SyncHub's full table list (43 tables, ~9.15M rows). Our coverage,
+by sync mechanism (see `sync/resources.py` for config):
+
+**Detail sync** (search → multi-ID GET → curated typed columns + raw_payload):
+orders (SO/PO/SC/PC incl. line rows — SyncHub lacks PO rows), products, contacts.
+
+**Search dumps** (typed schema generated from the search's own metaData):
+journal_rows (1.43M — includes per-line debit/credit, covering SyncHub's
+Journal + JournalCredit + JournalDebit), customer_payments, goods_movements,
+goods_out_notes, companies, brands, collections, product_types, seasons,
+contact_groups, nominal_codes, currencies, payment_methods, warehouses,
+shipping_methods.
+
+**Reference GETs** (truncate-reload): order_statuses, order_types,
+order_stock_statuses, order_shipping_statuses, tax_codes, accounting_periods,
+lead_sources, contact_tags, price_lists, channel_brands.
+
+**Derived** (fan-out from products): product_prices (per price list),
+product_availability (per warehouse, stock-tracked only).
+
+**Known gaps (tracked, not yet implemented):**
+- Order/Product/Contact **custom-field values** — high value (RollSize, MOQ);
+  needs custom-field metadata endpoints; SyncHub has these
+- Journal **detail GETs** (accounting-service/journal/{id}) if per-line data
+  beyond journal-search is ever needed
+- Stock transfers (262 rows; no search endpoint found — needs endpoint research)
+- Product categories (227) & product groups (9.6k) — endpoint paths 404'd on
+  probe; needs research
+- Order custom rows like landed-cost estimates, order reservations, warehouse
+  locations, product variation options (SyncHub offers these as "expensive
+  upgrades"; add on demand)
+- Supplier payments (SyncHub 7k — likely a paymentType filter on
+  customer-payment-search; verify)
+- Goods-in notes (order goods notes) — probe found no goods-in-search;
+  research order-service/goods-note endpoints
+
 ## Phases
 
 ### Phase 0 — Prerequisites (manual, guided)

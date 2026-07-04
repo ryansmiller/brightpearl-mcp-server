@@ -24,34 +24,71 @@ class BigQueryWriter:
         for name, spec in TABLES.items():
             table = bigquery.Table(self._table_ref(name), schema=spec["schema"])
             self.client.create_table(table, exists_ok=True)
+        # Additive migrations for pre-existing tables
+        self.client.query_and_wait(
+            f"ALTER TABLE `{self._table_ref('sync_state')}` "
+            "ADD COLUMN IF NOT EXISTS watermark_id INT64"
+        )
 
-    def _load_staging(self, name: str, rows: list[dict[str, Any]]) -> str:
+    def ensure_table(self, name: str, schema: list[bigquery.SchemaField]) -> None:
+        table = bigquery.Table(self._table_ref(name), schema=schema)
+        self.client.create_table(table, exists_ok=True)
+
+    def _load_staging(
+        self,
+        name: str,
+        rows: list[dict[str, Any]],
+        schema: list[bigquery.SchemaField] | None = None,
+    ) -> str:
         staging = self._table_ref(f"_stg_{name}")
         job = self.client.load_table_from_json(
             rows,
             staging,
             job_config=bigquery.LoadJobConfig(
-                schema=TABLES[name]["schema"],
+                schema=schema or TABLES[name]["schema"],
                 write_disposition="WRITE_TRUNCATE",
             ),
         )
         job.result()
         return staging
 
-    def upsert(self, name: str, rows: list[dict[str, Any]]) -> int:
-        """MERGE rows into the target table keyed on the table's key_field.
+    def truncate_load(
+        self, name: str, rows: list[dict[str, Any]], schema: list[bigquery.SchemaField]
+    ) -> int:
+        """Replace the whole table (small reference/mutable resources)."""
+        self.ensure_table(name, schema)
+        job = self.client.load_table_from_json(
+            rows,
+            self._table_ref(name),
+            job_config=bigquery.LoadJobConfig(schema=schema, write_disposition="WRITE_TRUNCATE"),
+        )
+        job.result()
+        return len(rows)
+
+    def upsert(
+        self,
+        name: str,
+        rows: list[dict[str, Any]],
+        schema: list[bigquery.SchemaField] | None = None,
+        key: str | None = None,
+    ) -> int:
+        """MERGE rows into the target table keyed on the table's key field.
 
         Staging is deduped on the key (keeping the freshest when_upserted) so
         overlapping pages or duplicate webhook deliveries stay idempotent.
+        Schema/key come from TABLES unless supplied (dynamic search dumps).
         """
         if not rows:
             return 0
-        spec = TABLES[name]
-        key = spec["key_field"]
-        staging = self._load_staging(name, rows)
+        if schema is None:
+            spec = TABLES[name]
+            schema, key = spec["schema"], spec["key_field"]
+        staging = self._load_staging(name, rows, schema)
         target = self._table_ref(name)
-        cols = [f.name for f in spec["schema"]]
+        cols = [f.name for f in schema]
         updates = ", ".join(f"T.{c} = S.{c}" for c in cols if c != key)
+        insert_cols = ", ".join(cols)
+        insert_vals = ", ".join(f"S.{c}" for c in cols)
         sql = f"""
         MERGE `{target}` T
         USING (
@@ -64,7 +101,7 @@ class BigQueryWriter:
         ) S
         ON T.{key} = S.{key}
         WHEN MATCHED THEN UPDATE SET {updates}
-        WHEN NOT MATCHED THEN INSERT ROW
+        WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})
         """
         if name == "sync_state":
             sql = sql.replace("ORDER BY when_upserted DESC", "ORDER BY last_run_at DESC")

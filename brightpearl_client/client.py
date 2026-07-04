@@ -29,10 +29,11 @@ class SearchPage:
     results_available: int
     first_result: int
     last_result: int
+    columns: list[dict[str, Any]]
 
     @property
     def has_more(self) -> bool:
-        return self.last_result < self.results_available
+        return bool(self.results) and self.last_result < self.results_available
 
     @property
     def next_first_result(self) -> int:
@@ -194,6 +195,7 @@ class BrightpearlClient:
             results_available=meta.get("resultsAvailable", len(rows)),
             first_result=meta.get("firstResult", first_result),
             last_result=meta.get("lastResult", first_result + len(rows) - 1),
+            columns=meta["columns"],
         )
 
     async def search_all(
