@@ -8,6 +8,7 @@ dependencies = [
     "google-cloud-bigquery>=3.25",
     "google-cloud-bigquery-storage>=2.25",
     "google-cloud-logging>=3.16.0",
+    "google-cloud-tasks>=2.23.0",
     "httpx>=0.27",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",

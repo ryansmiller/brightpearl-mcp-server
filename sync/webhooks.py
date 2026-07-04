@@ -1,13 +1,18 @@
-"""Webhook ingest service + subscription management (GAMEPLAN Phase 2b).
+"""Webhook ingest service + subscription management (GAMEPLAN Phases 2b/4/5).
 
-Brightpearl POSTs thin events (resource type + ids) to /webhook; we ack 200
-immediately, buffer ids briefly, then fetch full resources in batched
-multi-ID GETs and upsert into BigQuery. Delivery is at-least-once and
-upserts are idempotent, so duplicates are harmless.
+Durable processing via Cloud Tasks: the webhook handler validates, enqueues a
+task (persisted by Cloud Tasks), and acks — all inside the request. Cloud
+Tasks then calls /process with a signed OIDC identity token; the fetch +
+BigQuery upsert happens inside THAT request, so request-based billing covers
+everything and a crashed instance just means the task retries. Delivery is
+at-least-once end to end and upserts are idempotent, so duplicates are
+harmless.
 
-The same app exposes /tick/{tier} for Cloud Scheduler to trigger sweeps —
-one process shares one rate limiter across webhooks and sweeps (run with
-max-instances=1 so the 200 req/min account budget is never split).
+Without TASKS_QUEUE set (local dev, tests), events process inline.
+
+The same app exposes /tick/{tier} for Cloud Scheduler sweeps and /alert-check
+for staleness monitoring. Run with max-instances=1 so the 200 req/min
+Brightpearl budget is never split across instances.
 
 Serve:      python -m sync.webhooks
 Subscribe:  python -m sync.cli webhooks register --url https://.../webhook?token=...
@@ -18,7 +23,6 @@ import hmac
 import json
 import logging
 import os
-from collections import defaultdict
 
 import uvicorn
 from starlette.applications import Starlette
@@ -35,8 +39,6 @@ from .pipeline import SyncPipeline
 from .resources import REFERENCE_GETS, SEARCH_DUMPS
 
 logger = logging.getLogger(__name__)
-
-FLUSH_SECONDS = 3.0
 
 # Events verified subscribable on this account (2026-07): contact.* and
 # order.created do not exist — order.modified fires on creation too, and
@@ -86,79 +88,99 @@ TIERS: dict[str, dict] = {
 }
 
 
-class Ingestor:
-    """Buffers webhook ids briefly, then fetches + upserts in batches."""
+class Processor:
+    """Fetches full resources for webhook events and upserts into BigQuery."""
 
     def __init__(self):
         self.bp = BrightpearlClient()
         self.bq = BigQueryWriter()
         self.pipeline = SyncPipeline(self.bp, self.bq)
-        self.pending: dict[str, set[int]] = defaultdict(set)
-        self.movements_pending = False
-        self.lock = asyncio.Lock()
-        self.flusher: asyncio.Task | None = None
 
-    async def enqueue(self, resource_type: str, ids: list[int]) -> None:
-        if resource_type in MOVEMENT_TRIGGERS:
-            async with self.lock:
-                self.movements_pending = True
-                if self.flusher is None or self.flusher.done():
-                    self.flusher = asyncio.create_task(self._flush_later())
-            return
-        name = RESOURCE_MAP.get(resource_type)
+    async def process(self, resource: str, ids: list[int]) -> int:
+        if resource in MOVEMENT_TRIGGERS:
+            n = await SearchDumpSyncer(self.bp, self.bq).sync("goods_movements")
+            logger.info("goods-note event: goods_movements sweep, %d rows", n)
+            return n
+        name = RESOURCE_MAP.get(resource)
         if not name:
-            logger.info("ignoring webhook for unmapped resource %s", resource_type)
-            return
-        async with self.lock:
-            self.pending[name].update(ids)
-            if self.flusher is None or self.flusher.done():
-                self.flusher = asyncio.create_task(self._flush_later())
-
-    async def _flush_later(self) -> None:
-        await asyncio.sleep(FLUSH_SECONDS)
-        async with self.lock:
-            batch, self.pending = dict(self.pending), defaultdict(set)
-            movements, self.movements_pending = self.movements_pending, False
+            logger.info("ignoring event for unmapped resource %s", resource)
+            return 0
+        unique = sorted(set(ids))
         try:
-            await self._process(batch, movements)
-        finally:
-            # Events that arrived during processing would otherwise sit in
-            # pending until the NEXT webhook — reschedule ourselves.
-            async with self.lock:
-                if self.pending or self.movements_pending:
-                    self.flusher = asyncio.create_task(self._flush_later())
-
-    async def _process(self, batch: dict[str, set[int]], movements: bool) -> None:
-        if movements:
-            try:
-                n = await SearchDumpSyncer(self.bp, self.bq).sync("goods_movements")
-                logger.info("webhook flush: goods_movements sweep, %d rows", n)
-            except Exception:
-                logger.exception("webhook-triggered goods_movements sweep failed")
-        for name, ids in batch.items():
-            try:
-                if name == "orders":
-                    n, _ = await self.pipeline._load_orders(sorted(ids))
-                else:
-                    n, _ = await self.pipeline._load_simple(name, sorted(ids))
+            if name == "orders":
+                n, _ = await self.pipeline._load_orders(unique)
+            else:
+                n, _ = await self.pipeline._load_simple(name, unique)
                 if name == "products":
                     # stock events arrive as product webhooks — keep the
                     # per-warehouse availability table current too
-                    await DerivedSyncer(self.bp, self.bq).refresh_availability(sorted(ids))
-                logger.info("webhook flush: %s x%d upserted", name, n)
-            except BrightpearlNotFound:
-                logger.warning("webhook flush: %s ids %s not found (deleted?)", name, ids)
-            except Exception:
-                logger.exception("webhook flush failed for %s", name)
+                    await DerivedSyncer(self.bp, self.bq).refresh_availability(unique)
+            logger.info("processed %s x%d", name, n)
+            return n
+        except BrightpearlNotFound:
+            logger.warning("%s ids %s not found (deleted?)", name, unique)
+            return 0
 
 
-ingestor: Ingestor | None = None
+processor: Processor | None = None
+_tasks_client = None
+
+
+def _create_task(queue: str, payload: dict) -> None:
+    global _tasks_client
+    from google.cloud import tasks_v2
+
+    if _tasks_client is None:
+        _tasks_client = tasks_v2.CloudTasksClient()
+    service_url = os.environ["SERVICE_URL"]
+    _tasks_client.create_task(
+        parent=queue,
+        task={
+            "http_request": {
+                "http_method": tasks_v2.HttpMethod.POST,
+                "url": f"{service_url}/process",
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps(payload).encode(),
+                "oidc_token": {
+                    "service_account_email": os.environ["SERVICE_ACCOUNT_EMAIL"],
+                    "audience": service_url,
+                },
+            }
+        },
+    )
+
+
+async def dispatch(resource: str, ids: list[int]) -> str:
+    """Durable path: enqueue to Cloud Tasks. Inline fallback for local dev."""
+    queue = os.environ.get("TASKS_QUEUE")
+    if not queue:
+        await processor.process(resource, ids)
+        return "inline"
+    await asyncio.to_thread(_create_task, queue, {"resource": resource, "ids": ids})
+    return "queued"
 
 
 def _check_token(request: Request) -> bool:
     expected = os.environ.get("WEBHOOK_TOKEN", "")
     supplied = request.query_params.get("token", "")
     return bool(expected) and hmac.compare_digest(supplied, expected)
+
+
+def _check_oidc(request: Request) -> bool:
+    """Verify a Google-signed identity token from Cloud Tasks."""
+    auth = request.headers.get("authorization", "")
+    if not auth.startswith("Bearer "):
+        return False
+    try:
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token as google_id_token
+
+        claims = google_id_token.verify_oauth2_token(
+            auth[7:], google_requests.Request(), audience=os.environ.get("SERVICE_URL")
+        )
+        return claims.get("email") == os.environ.get("SERVICE_ACCOUNT_EMAIL")
+    except Exception:
+        return False
 
 
 async def webhook(request: Request) -> JSONResponse:
@@ -173,17 +195,36 @@ async def webhook(request: Request) -> JSONResponse:
     raw_id = str(body.get("id", ""))
     event = str(body.get("event", ""))
     ids = [int(x) for x in raw_id.split(",") if x.strip().isdigit()]
-    if resource and ids:
-        if event == "destroyed":
-            table = RESOURCE_MAP.get(resource)
-            if table:
-                from .schema import TABLES
+    if not (resource and ids):
+        return JSONResponse({"accepted": 0})
+    if event == "destroyed":
+        table = RESOURCE_MAP.get(resource)
+        if table:
+            from .schema import TABLES
 
-                ingestor.bq.mark_deleted(table, TABLES[table]["key_field"], ids)
-                logger.info("webhook: marked %d %s deleted", len(ids), table)
-        else:
-            await ingestor.enqueue(resource, ids)
-    return JSONResponse({"accepted": len(ids)})
+            processor.bq.mark_deleted(table, TABLES[table]["key_field"], ids)
+            logger.info("webhook: marked %d %s deleted", len(ids), table)
+        return JSONResponse({"accepted": len(ids)})
+    how = await dispatch(resource, ids)
+    return JSONResponse({"accepted": len(ids), "dispatch": how})
+
+
+async def process_task(request: Request) -> JSONResponse:
+    """Cloud Tasks callback. Non-2xx → the task retries with backoff."""
+    if not (_check_oidc(request) or _check_token(request)):
+        return JSONResponse({"error": "unauthorized"}, status_code=403)
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    resource = str(body.get("resource", ""))
+    ids = [int(x) for x in body.get("ids", [])]
+    try:
+        n = await processor.process(resource, ids)
+    except Exception:
+        logger.exception("processing failed for %s %s; task will retry", resource, ids)
+        return JSONResponse({"error": "processing failed"}, status_code=500)
+    return JSONResponse({"processed": n})
 
 
 async def tick(request: Request) -> JSONResponse:
@@ -194,11 +235,11 @@ async def tick(request: Request) -> JSONResponse:
         return JSONResponse({"error": f"unknown tier {tier}"}, status_code=400)
     spec = TIERS[tier]
     results: dict[str, int] = {}
-    searcher = SearchDumpSyncer(ingestor.bp, ingestor.bq)
-    reference = ReferenceSyncer(ingestor.bp, ingestor.bq)
-    derived = DerivedSyncer(ingestor.bp, ingestor.bq)
+    searcher = SearchDumpSyncer(processor.bp, processor.bq)
+    reference = ReferenceSyncer(processor.bp, processor.bq)
+    derived = DerivedSyncer(processor.bp, processor.bq)
     for name in spec["sweeps"]:
-        results[name] = await ingestor.pipeline.sync(name, incremental=True)
+        results[name] = await processor.pipeline.sync(name, incremental=True)
     for name in spec["dumps"]:
         if name in REFERENCE_GETS:
             results[name] = await reference.sync(name)
@@ -212,7 +253,7 @@ async def tick(request: Request) -> JSONResponse:
     if tier == "cold":
         for resource in ("orders", "products", "contacts"):
             results[f"reconcile_{resource}"] = (
-                await ingestor.pipeline.reconcile_deletions(resource)
+                await processor.pipeline.reconcile_deletions(resource)
             )
     logger.info("tick %s: %s", tier, results)
     return JSONResponse({"tier": tier, "results": results})
@@ -251,9 +292,9 @@ async def alert_check(request: Request) -> JSONResponse:
     if not _check_token(request):
         return JSONResponse({"error": "bad token"}, status_code=403)
     budgets = _resource_budgets()
-    rows = ingestor.bq.query(
+    rows = processor.bq.query(
         f"SELECT resource, TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), last_run_at, MINUTE) AS lag "
-        f"FROM `{ingestor.bq._table_ref('sync_state')}`"
+        f"FROM `{processor.bq._table_ref('sync_state')}`"
     )
     seen = {r["resource"]: r["lag"] for r in rows}
     violations = []
@@ -272,10 +313,11 @@ async def alert_check(request: Request) -> JSONResponse:
 
 
 def create_app() -> Starlette:
-    global ingestor
-    ingestor = Ingestor()
+    global processor
+    processor = Processor()
     return Starlette(routes=[
         Route("/webhook", webhook, methods=["POST"]),
+        Route("/process", process_task, methods=["POST"]),
         Route("/tick/{tier}", tick, methods=["POST"]),
         Route("/health", healthz, methods=["GET"]),
         Route("/alert-check", alert_check, methods=["POST", "GET"]),
