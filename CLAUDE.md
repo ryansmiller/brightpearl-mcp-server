@@ -4,6 +4,8 @@ Natural-language access to East Coast Fabrics' Brightpearl ERP data: a sync pipe
 
 **Roadmap, phase status, and architecture details live in [GAMEPLAN.md](GAMEPLAN.md).** Update its Status log when a phase advances.
 
+**[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) is a code tour written for Ryan (JavaScript background).** Keep it current when modules change shape — it's how the owner reads this codebase.
+
 ## Layout
 
 Flat layout — packages at the project root, imported from CWD when running locally. **Do not reintroduce a src/ layout or rely on editable installs**: a background agent on this Mac sets the macOS hidden flag on every `.pth` file in site-packages within seconds, and Python 3.13+ skips hidden `.pth` files, silently breaking editable-install imports.
