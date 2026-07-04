@@ -170,16 +170,17 @@ Learned from live API: order-search has no `reference` column — it's `customer
 - [ ] Dedupe/idempotency keyed on resource ID + modified time
 
 ### Phase 2c — Semantic view layer
-- [ ] `sales_flat`, `inventory_position`, `po_pipeline`, `customer_summary` views
-- [ ] View documentation strings the MCP server surfaces to the model
+- [x] `sales_flat`, `inventory_position`, `po_pipeline`, `customer_summary`, `monthly_financials` views (`sync/views.py`; recreate with `sync.cli views`)
+- [x] Views documented via MCP `get_schema` + server instructions
 
-### Phase 3 — MCP server (`src/mcp_server/`)
-- [ ] FastMCP app; stdio transport for local dev, streamable-HTTP for remote
-- [ ] Domain tools: `query_sales`, `get_stock_levels`, `search_customers`, `get_financials`, `get_po_pipeline`
-- [ ] Guarded `run_bigquery_sql` (read-only enforcement, byte-scan cap)
-- [ ] Live passthrough tools: `get_order_live`, `get_stock_live`
-- [ ] `get_data_freshness` tool (reads `sync_state`)
-- [ ] Tool-call audit log table
+### Phase 3 — MCP server (`mcp_server/`)
+- [x] FastMCP app; stdio transport for local dev (registered in `.mcp.json`); streamable-HTTP moves to Phase 4
+- [x] Domain tools: `query_sales`, `get_stock_levels`, `search_customers`, `get_po_pipeline` (financials covered by `monthly_financials` view + SQL tool)
+- [x] Guarded `run_bigquery_sql` (SELECT/WITH only, keyword blocklist, 2GB scan cap, 200-row result cap)
+- [x] Live passthrough tools: `get_order_live`, `get_stock_live` (priority rate-limit lane)
+- [x] `get_data_freshness` tool (reads `sync_state`)
+- [x] Tool-call audit log table (`mcp_audit`)
+- [ ] End-to-end test from a Claude client over stdio
 
 ### Phase 4 — Remote deployment
 - [ ] Dockerfile (single image; entrypoints for MCP server, webhook ingest, sweep job)

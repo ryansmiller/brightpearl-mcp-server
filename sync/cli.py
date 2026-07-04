@@ -31,6 +31,12 @@ async def run(args: argparse.Namespace) -> None:
         bq.ensure_tables()
         print(f"tables ready in {bq.project}.{bq.dataset}")
         return
+    if args.command == "views":
+        from .views import create_views
+
+        for name in create_views(bq):
+            print(f"view ready: {name}")
+        return
     if args.command == "status":
         rows = bq.query(
             f"SELECT resource, watermark_updated_on, watermark_id, last_run_at, "
@@ -83,6 +89,7 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("init")
     sub.add_parser("status")
+    sub.add_parser("views")
     for cmd in ("backfill", "sweep"):
         p = sub.add_parser(cmd)
         p.add_argument("resource", choices=[*RESOURCES, "all"])
