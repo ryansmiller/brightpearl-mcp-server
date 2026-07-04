@@ -76,9 +76,15 @@ class ResourceAPI:
             self.service, self.resource, filters=filters, columns=columns, priority=priority
         )
 
-    async def get(self, ids: list[int], *, priority: bool = False) -> list[dict[str, Any]]:
+    async def get(
+        self,
+        ids: list[int],
+        *,
+        params: dict[str, Any] | None = None,
+        priority: bool = False,
+    ) -> list[dict[str, Any]]:
         return await self._client.get_resources(
-            self.service, self.resource, ids, priority=priority
+            self.service, self.resource, ids, params=params, priority=priority
         )
 
 
@@ -221,13 +227,19 @@ class BrightpearlClient:
             first = page.next_first_result
 
     async def get_resources(
-        self, service: str, resource: str, ids: list[int], *, priority: bool = False
+        self,
+        service: str,
+        resource: str,
+        ids: list[int],
+        *,
+        params: dict[str, Any] | None = None,
+        priority: bool = False,
     ) -> list[dict[str, Any]]:
         """Fetch full resources by ID using multi-ID GETs (one request per chunk)."""
         out: list[dict[str, Any]] = []
         for i in range(0, len(ids), MULTI_ID_CHUNK):
             chunk = ids[i : i + MULTI_ID_CHUNK]
             id_set = ",".join(str(x) for x in chunk)
-            payload = await self.get(f"{service}/{resource}/{id_set}", priority=priority)
+            payload = await self.get(f"{service}/{resource}/{id_set}", params, priority=priority)
             out.extend(payload if isinstance(payload, list) else [payload])
         return out

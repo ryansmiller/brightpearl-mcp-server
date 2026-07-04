@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 SWEEP_OVERLAP = timedelta(minutes=10)
 FETCH_BATCH = 500  # searched IDs are fetched+loaded in batches of this size
 
+# Custom fields (PCF_*) only appear when explicitly requested; with this param
+# they land in raw_payload automatically (see GAMEPLAN custom-fields note)
+DETAIL_PARAMS = {"includeOptional": "customFields"}
+
 RESOURCES: dict[str, dict[str, Any]] = {
     "orders": {
         "search": ("order-service", "order"),
@@ -92,7 +96,7 @@ class SyncPipeline:
         max_updated: datetime | None = None
         for i in range(0, len(ids), FETCH_BATCH):
             batch = ids[i : i + FETCH_BATCH]
-            payloads = await self.bp.orders.get(batch)
+            payloads = await self.bp.orders.get(batch, params=DETAIL_PARAMS)
             order_rows, line_rows, parent_ids = [], [], []
             for payload in payloads:
                 head, lines = order_to_rows(payload)
@@ -118,7 +122,7 @@ class SyncPipeline:
         max_updated: datetime | None = None
         for i in range(0, len(ids), FETCH_BATCH):
             batch = ids[i : i + FETCH_BATCH]
-            payloads = await api.get(batch)
+            payloads = await api.get(batch, params=DETAIL_PARAMS)
             rows = []
             for payload in payloads:
                 rows.append(transform(payload))
