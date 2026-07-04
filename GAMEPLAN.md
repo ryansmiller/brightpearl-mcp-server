@@ -134,13 +134,13 @@ product_option_values, contact_group_members, channels.
   drop-ship notes, contact balances (good live-MCP-tool candidate),
   all-transaction-statement (404'd), product groups (GET semantics unclear)
 
-**Hardening backlog (from external code review, 2026-07-04 — quick wins done,
-these remain):**
-- Durable webhook queue (Cloud Tasks/PubSub) instead of in-process buffering;
-  current mitigations: always-allocated CPU, self-rescheduling flush, and the
-  5-min sweeps reconciling anything lost
-- Auth separation: Cloud Scheduler OIDC for /tick + /alert-check, distinct
-  webhook secret (today one shared query token, constant-time compared)
+**Hardening backlog (from external code review, 2026-07-04):**
+- [x] Durable webhook queue: Cloud Tasks (queue `webhook-events`, us-east4) —
+  webhook enqueues in-request, /process runs under OIDC-signed callbacks with
+  automatic retry; sync-ingest back on request-based billing (~$35/mo saved)
+- Auth separation (partial): /process verifies OIDC; /tick + /alert-check
+  still use the shared query token (constant-time compared) — move Scheduler
+  to OIDC eventually
 - Per-caller identity in mcp_audit (needs per-user bearer tokens)
 
 ## Phases
