@@ -28,6 +28,13 @@ PRICE_SCHEMA = [
     bigquery.SchemaField("when_upserted", "TIMESTAMP", mode="REQUIRED"),
 ]
 
+SUPPLIER_SCHEMA = [
+    bigquery.SchemaField("product_id", "INT64", mode="REQUIRED"),
+    bigquery.SchemaField("supplier_contact_id", "INT64", mode="REQUIRED"),
+    bigquery.SchemaField("is_primary", "BOOL"),
+    bigquery.SchemaField("when_upserted", "TIMESTAMP", mode="REQUIRED"),
+]
+
 AVAILABILITY_SCHEMA = [
     bigquery.SchemaField("product_id", "INT64", mode="REQUIRED"),
     bigquery.SchemaField("warehouse_id", "INT64"),
@@ -80,6 +87,48 @@ class DerivedSyncer:
                 logger.info("product_prices: fetched %d/%d products", i + len(chunk), len(ids))
         n = self.bq.truncate_load("product_prices", rows, PRICE_SCHEMA)
         logger.info("product_prices: %d rows", n)
+        return n
+
+    async def sync_suppliers(self) -> int:
+        """product-service/product/{idset}/supplier → one row per product × supplier.
+
+        is_primary comes from the product payload's primarySupplierId, read
+        from our own products table (no extra API calls).
+        """
+        primaries = {
+            r["product_id"]: r["primary"]
+            for r in self.bq.query(
+                f"SELECT product_id, "
+                f"SAFE_CAST(JSON_VALUE(raw_payload, '$.primarySupplierId') AS INT64) AS primary "
+                f"FROM `{self.bq._table_ref('products')}` "
+                f"WHERE NOT IFNULL(is_deleted, FALSE)"
+            )
+        }
+        ids = sorted(primaries)
+        rows = []
+        now = _now()
+        for i in range(0, len(ids), CHUNK):
+            chunk = ids[i : i + CHUNK]
+            id_set = ",".join(map(str, chunk))
+            try:
+                payload = await self.bp.get(f"product-service/product/{id_set}/supplier")
+            except BrightpearlError as e:
+                logger.warning("supplier chunk failed (%s); skipping %d ids", e, len(chunk))
+                continue
+            for pid, supplier_ids in (payload or {}).items():
+                for sid in supplier_ids or []:
+                    rows.append(
+                        {
+                            "product_id": int(pid),
+                            "supplier_contact_id": int(sid),
+                            "is_primary": primaries.get(int(pid)) == int(sid),
+                            "when_upserted": now,
+                        }
+                    )
+            if i % 10000 == 0:
+                logger.info("product_suppliers: fetched %d/%d products", i + len(chunk), len(ids))
+        n = self.bq.truncate_load("product_suppliers", rows, SUPPLIER_SCHEMA)
+        logger.info("product_suppliers: %d rows", n)
         return n
 
     async def _fetch_availability(self, chunk: list[int]) -> dict:

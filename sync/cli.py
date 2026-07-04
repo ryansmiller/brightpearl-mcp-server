@@ -87,6 +87,8 @@ async def run(args: argparse.Namespace) -> None:
                 print(f"product_prices: {await derived.sync_prices()} rows")
             if args.kind in ("availability", "all"):
                 print(f"product_availability: {await derived.sync_availability()} rows")
+            if args.kind in ("suppliers", "all"):
+                print(f"product_suppliers: {await derived.sync_suppliers()} rows")
 
 
 def main() -> None:
@@ -107,7 +109,7 @@ def main() -> None:
     p.add_argument("table", choices=[*SEARCH_DUMPS, *REFERENCE_GETS, "all", "refs"])
     p.add_argument("--full", action="store_true")
     p = sub.add_parser("derived")
-    p.add_argument("kind", choices=["prices", "availability", "all"])
+    p.add_argument("kind", choices=["prices", "availability", "suppliers", "all"])
     p = sub.add_parser("webhooks")
     p.add_argument("action", choices=["register", "list"])
     p.add_argument("--url", help="ingest URL incl. ?token= (required for register)")

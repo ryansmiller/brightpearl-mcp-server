@@ -104,7 +104,8 @@ order_stock_statuses, order_shipping_statuses, tax_codes, accounting_periods,
 lead_sources, contact_tags, price_lists, channel_brands.
 
 **Derived** (fan-out from products): product_prices (per price list),
-product_availability (per warehouse, stock-tracked only).
+product_availability (per warehouse, stock-tracked only), product_suppliers
+(per supplier contact, with is_primary from the product payload).
 
 **Endpoint audit (2026-07-03, against official API docs for all services):**
 Later probe unlocked and synced: supplier_payments, categories
@@ -123,8 +124,6 @@ product_option_values, contact_group_members, channels.
 - **Order notes** (order-service order-note GET) and **contact postal
   addresses** (GET per address id; order payloads embed delivery addresses so
   partially covered)
-- **Product suppliers** (SyncHub 77k; product-supplier GET path 404'd on
-  probe — likely per-product subresource; check raw product payloads first)
 - **Goods-in notes** (docs list Goods-In Note SEARCH; both probed paths
   404'd — needs path research)
 - **Stock transfers** (GET by id works, no search; derive ids from

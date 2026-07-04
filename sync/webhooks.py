@@ -83,7 +83,7 @@ TIERS: dict[str, dict] = {
         "sweeps": ["products"],
         "dumps": [t for t in SEARCH_DUMPS if SEARCH_DUMPS[t]["tier"] == "cold"]
                  + list(REFERENCE_GETS),
-        "derived": ["prices"],
+        "derived": ["prices", "suppliers"],
     },
 }
 
@@ -245,11 +245,13 @@ async def tick(request: Request) -> JSONResponse:
             results[name] = await reference.sync(name)
         else:
             results[name] = await searcher.sync(name)
+    derived_fns = {
+        "prices": derived.sync_prices,
+        "availability": derived.sync_availability,
+        "suppliers": derived.sync_suppliers,
+    }
     for kind in spec["derived"]:
-        results[f"derived_{kind}"] = (
-            await derived.sync_prices() if kind == "prices"
-            else await derived.sync_availability()
-        )
+        results[f"derived_{kind}"] = await derived_fns[kind]()
     if tier == "cold":
         for resource in ("orders", "products", "contacts"):
             results[f"reconcile_{resource}"] = (
