@@ -6,7 +6,6 @@ which BigQuery load jobs parse into TIMESTAMP natively. The complete payload is
 preserved in raw_payload (JSON) so no field is ever lost.
 """
 
-import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -66,7 +65,7 @@ def order_to_rows(order: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str,
         "invoice_reference": invoices[0].get("invoiceReference") if invoices else None,
         "price_list_id": order.get("priceListId"),
         "historical_order": order.get("historicalOrder"),
-        "raw_payload": json.dumps(order),
+        "raw_payload": order,
         "when_upserted": now,
     }
 
@@ -97,7 +96,7 @@ def order_to_rows(order: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str,
                 "bundle_parent": composition.get("bundleParent"),
                 "bundle_child": composition.get("bundleChild"),
                 "parent_order_row_id": composition.get("parentOrderRowId") or None,
-                "product_options": json.dumps(options) if options else None,
+                "product_options": options or None,
                 "order_updated_on": order.get("updatedOn"),
                 "when_upserted": now,
             }
@@ -126,7 +125,7 @@ def product_to_row(product: dict[str, Any]) -> dict[str, Any]:
         "nominal_code_stock": product.get("nominalCodeStock"),
         "created_on": product.get("createdOn"),
         "updated_on": product.get("updatedOn"),
-        "raw_payload": json.dumps(product),
+        "raw_payload": product,
         "when_upserted": _now(),
     }
 
@@ -154,6 +153,6 @@ def contact_to_row(contact: dict[str, Any]) -> dict[str, Any]:
         "created_on": contact.get("createdOn"),
         "updated_on": contact.get("updatedOn"),
         "last_contacted_on": contact.get("lastContactedOn"),
-        "raw_payload": json.dumps(contact),
+        "raw_payload": contact,
         "when_upserted": _now(),
     }

@@ -1,5 +1,3 @@
-import json
-
 from sync.transforms import contact_to_row, order_to_rows, product_to_row
 
 # Trimmed + anonymized from a real API payload (see GAMEPLAN Phase 2)
@@ -58,7 +56,7 @@ def test_order_transform():
     assert head["customer_contact_id"] == 2329
     assert head["delivery_state"] == "CT"
     assert head["invoice_reference"] == "SI-504126"
-    assert json.loads(head["raw_payload"])["id"] == 100039
+    assert head["raw_payload"]["id"] == 100039
 
     assert len(lines) == 1
     line = lines[0]
@@ -67,7 +65,7 @@ def test_order_transform():
     assert line["quantity"] == 2.0
     assert line["row_net"] == 16.0
     assert line["product_sku"] == "SELECT_130-1080-07"
-    assert json.loads(line["product_options"]) == {"Color": "Bronze"}
+    assert line["product_options"] == {"Color": "Bronze"}
 
 
 def test_product_transform():

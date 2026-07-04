@@ -212,7 +212,7 @@ class ReferenceSyncer:
             {
                 "id": _pluck_id(item),
                 "name": _pluck_name(item),
-                "raw_payload": json.dumps(item),
+                "raw_payload": item,
                 "when_upserted": now,
             }
             for item in items

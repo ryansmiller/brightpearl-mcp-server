@@ -7,7 +7,6 @@
 Both truncate-and-reload: the source data is a point-in-time snapshot.
 """
 
-import json
 import logging
 from datetime import datetime, timezone
 
@@ -73,7 +72,7 @@ class DerivedSyncer:
                             "product_id": product["productId"],
                             "price_list_id": pl["priceListId"],
                             "price": float(base) if base not in (None, "") else None,
-                            "quantity_prices": json.dumps(qty),
+                            "quantity_prices": qty or None,
                             "when_upserted": now,
                         }
                     )
