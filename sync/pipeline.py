@@ -135,6 +135,33 @@ class SyncPipeline:
             logger.info("%s: %d/%d loaded", resource, total, len(ids))
         return total, max_updated
 
+    async def reconcile_deletions(self, resource: str) -> int:
+        """Mark records deleted in Brightpearl but still live in BigQuery.
+
+        Orders and contacts have no destroyed webhook, so a full ID sweep
+        (search pages only — no detail fetches) runs in the cold tier daily.
+        """
+        from .schema import TABLES
+
+        key_field = TABLES[resource]["key_field"]
+        api_ids = set(await self._collect_ids(resource, None, None))
+        bq_rows = self.bq.query(
+            f"SELECT {key_field} AS id FROM `{self.bq._table_ref(resource)}` "
+            f"WHERE NOT IFNULL(is_deleted, FALSE)"
+        )
+        missing = [r["id"] for r in bq_rows if r["id"] not in api_ids]
+        # An empty API result means the search itself failed silently — never
+        # mass-delete on that signal.
+        if not api_ids or len(missing) > len(bq_rows) * 0.2:
+            logger.warning(
+                "%s reconcile: refusing suspicious deletion of %d/%d rows",
+                resource, len(missing), len(bq_rows),
+            )
+            return 0
+        n = self.bq.mark_deleted(resource, key_field, missing)
+        logger.info("%s reconcile: %d marked deleted", resource, n)
+        return n
+
     async def sync(
         self,
         resource: str,

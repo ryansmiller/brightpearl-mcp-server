@@ -43,7 +43,7 @@ VIEWS: dict[str, str] = {
         FROM `{ds}.orders` o
         JOIN `{ds}.order_rows` r USING (order_id)
         LEFT JOIN `{ds}.channels` ch ON SAFE_CAST(ch.id AS INT64) = o.channel_id
-        WHERE o.order_type_code = 'SO'
+        WHERE o.order_type_code = 'SO' AND NOT IFNULL(o.is_deleted, FALSE)
     """,
     # One row per product per warehouse with stock position + key custom fields
     "inventory_position": """
@@ -68,7 +68,7 @@ VIEWS: dict[str, str] = {
         LEFT JOIN `{ds}.product_availability` a USING (product_id)
         LEFT JOIN `{ds}.warehouses` w ON w.id = a.warehouse_id
         LEFT JOIN `{ds}.brands` b ON b.brand_id = p.brand_id
-        WHERE p.status = 'LIVE'
+        WHERE p.status = 'LIVE' AND NOT IFNULL(p.is_deleted, FALSE)
     """,
     # One row per purchase-order line still open (inbound pipeline)
     "po_pipeline": """
@@ -95,7 +95,7 @@ VIEWS: dict[str, str] = {
         FROM `{ds}.orders` o
         JOIN `{ds}.order_rows` r USING (order_id)
         LEFT JOIN `{ds}.warehouses` w ON w.id = o.warehouse_id
-        WHERE o.order_type_code = 'PO'
+        WHERE o.order_type_code = 'PO' AND NOT IFNULL(o.is_deleted, FALSE)
     """,
     # One row per customer with lifetime stats
     "customer_summary": """
@@ -116,6 +116,7 @@ VIEWS: dict[str, str] = {
         FROM `{ds}.contacts` c
         LEFT JOIN `{ds}.orders` o
           ON o.customer_contact_id = c.contact_id AND o.order_type_code = 'SO'
+          AND NOT IFNULL(o.is_deleted, FALSE)
         GROUP BY 1, 2, 3, 4, 5, 6, 7
     """,
     # Monthly P&L-style rollup from journal lines (debits/credits are strings)

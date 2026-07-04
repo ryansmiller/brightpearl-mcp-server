@@ -65,6 +65,8 @@ def order_to_rows(order: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str,
         "invoice_reference": invoices[0].get("invoiceReference") if invoices else None,
         "price_list_id": order.get("priceListId"),
         "historical_order": order.get("historicalOrder"),
+        "is_deleted": False,
+        "deleted_at": None,
         "raw_payload": order,
         "when_upserted": now,
     }
@@ -125,6 +127,8 @@ def product_to_row(product: dict[str, Any]) -> dict[str, Any]:
         "nominal_code_stock": product.get("nominalCodeStock"),
         "created_on": product.get("createdOn"),
         "updated_on": product.get("updatedOn"),
+        "is_deleted": False,
+        "deleted_at": None,
         "raw_payload": product,
         "when_upserted": _now(),
     }
@@ -153,6 +157,8 @@ def contact_to_row(contact: dict[str, Any]) -> dict[str, Any]:
         "created_on": contact.get("createdOn"),
         "updated_on": contact.get("updatedOn"),
         "last_contacted_on": contact.get("lastContactedOn"),
+        "is_deleted": False,
+        "deleted_at": None,
         "raw_payload": contact,
         "when_upserted": _now(),
     }

@@ -314,7 +314,12 @@ class BearerAuthMiddleware:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    if os.environ.get("K_SERVICE"):
+        import google.cloud.logging
+
+        google.cloud.logging.Client().setup_logging(log_level=logging.INFO)
+    else:
+        logging.basicConfig(level=logging.INFO)
     ensure_audit_table()
     if os.environ.get("MCP_TRANSPORT") == "http":
         import uvicorn

@@ -194,13 +194,14 @@ Notes: contact.* and order.created are not subscribable on this account (order.m
 
 ### Phase 5 — Hardening
 - [x] Staleness alerting: `/alert-check` (tier budgets hot 30m / warm 2h / cold 50h) on a 15-min schedule; STALENESS_ALERT log lines trigger a Cloud Monitoring policy → email ryan@eastcoastfabrics.com. First run immediately caught the reference-sync bookkeeping gap.
-- [ ] Deleted-record handling: product.destroyed / order deletions → is_deleted flags
-- [ ] Structured logging + error reporting
-- [ ] Integration tests; load-test the sweep within rate budget
-- [ ] Team onboarding docs (connecting Claude to the MCP server)
+- [x] Deleted-record handling: `is_deleted`/`deleted_at` on orders/products/contacts; `product.destroyed` webhook marks immediately; daily cold-tier reconciliation sweep catches order/contact deletions (with a 20% mass-delete safety valve); views exclude deleted rows; upserts clear the flag
+- [x] Structured logging: Cloud Logging severity levels on Cloud Run (Error Reporting picks up exception traces)
+- [x] Integration tests: webhook auth/parsing/destroyed-path/alert-check via Starlette TestClient (16 tests total); rate-budget behavior covered by rate-limiter unit tests + production header-sync
+- [x] Team onboarding doc: docs/ONBOARDING.md (connect, example questions, troubleshooting, boundaries)
 
 ## Status log
 
 - **2026-07-03** — Project kicked off: gameplan + CLAUDE.md written, scaffold created, repo pushed to GitHub. Next: Phase 0 prerequisites.
 - **2026-07-03 (later)** — Phase 0 nearly complete: GCP project `brightpearl-mcp-server` created with billing (freed a billing slot by unlinking dormant `alpine-task-194105`), APIs enabled, dataset `brightpearl` created, Brightpearl private-app credentials in `.env`. Remaining: ADC login. Next: Phase 1 (Brightpearl API client).
 - **2026-07-03 (evening)** — Phase 0 complete (ADC verified). Phase 1 complete: async client with shared rate limiter, 7 unit tests passing, live smoke test pulled real orders. Next: Phase 2 (BigQuery schema + batch sync).
+- **2026-07-04** — Phases 2–5 all complete: full warehouse (35+ tables, ~4.5M rows), semantic views, MCP server (local stdio + remote bearer-auth HTTP), Cloud Run deployment with webhooks + tiered scheduled sweeps, staleness alerting, deleted-record handling, integration tests, onboarding docs. Remaining work tracked under "Known gaps" (custom-field completion for products/contacts in progress, supplier_payments anomaly, minor coverage gaps).

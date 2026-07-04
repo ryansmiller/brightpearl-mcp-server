@@ -47,6 +47,24 @@ class BigQueryWriter:
             f"ALTER TABLE `{self._table_ref('sync_state')}` "
             "ADD COLUMN IF NOT EXISTS watermark_id INT64"
         )
+        for table in ("orders", "products", "contacts"):
+            self.client.query_and_wait(
+                f"ALTER TABLE `{self._table_ref(table)}` "
+                "ADD COLUMN IF NOT EXISTS is_deleted BOOL, "
+                "ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP"
+            )
+
+    def mark_deleted(self, table: str, key_field: str, ids: list[int]) -> int:
+        """Soft-delete records (destroyed webhooks / reconciliation sweeps)."""
+        if not ids:
+            return 0
+        id_list = ", ".join(str(i) for i in ids)
+        self.client.query_and_wait(
+            f"UPDATE `{self._table_ref(table)}` "
+            f"SET is_deleted = TRUE, deleted_at = CURRENT_TIMESTAMP() "
+            f"WHERE {key_field} IN ({id_list}) AND NOT IFNULL(is_deleted, FALSE)"
+        )
+        return len(ids)
 
     def ensure_table(self, name: str, schema: list[bigquery.SchemaField]) -> None:
         table = bigquery.Table(self._table_ref(name), schema=schema)

@@ -50,7 +50,7 @@ WEBHOOK_EVENTS = [
     # UI-created orders do NOT trigger it (per Ryan/docs). Kept as free
     # insurance for future API integrations; order.modified covers UI orders.
     "sales-order.created",
-    "product.created", "product.modified",
+    "product.created", "product.modified", "product.destroyed",
     # Stock-level change event (three-part code discovered from the account's
     # existing WooCommerce integration subscriptions)
     "product.modified.on-hand-modified",
@@ -159,9 +159,18 @@ async def webhook(request: Request) -> JSONResponse:
     # bodyTemplate fields; with idSetAccepted the id may be "1,2,3"
     resource = str(body.get("resource", ""))
     raw_id = str(body.get("id", ""))
+    event = str(body.get("event", ""))
     ids = [int(x) for x in raw_id.split(",") if x.strip().isdigit()]
     if resource and ids:
-        await ingestor.enqueue(resource, ids)
+        if event == "destroyed":
+            table = RESOURCE_MAP.get(resource)
+            if table:
+                from .schema import TABLES
+
+                ingestor.bq.mark_deleted(table, TABLES[table]["key_field"], ids)
+                logger.info("webhook: marked %d %s deleted", len(ids), table)
+        else:
+            await ingestor.enqueue(resource, ids)
     return JSONResponse({"accepted": len(ids)})
 
 
@@ -188,6 +197,11 @@ async def tick(request: Request) -> JSONResponse:
             await derived.sync_prices() if kind == "prices"
             else await derived.sync_availability()
         )
+    if tier == "cold":
+        for resource in ("orders", "products", "contacts"):
+            results[f"reconcile_{resource}"] = (
+                await ingestor.pipeline.reconcile_deletions(resource)
+            )
     logger.info("tick %s: %s", tier, results)
     return JSONResponse({"tier": tier, "results": results})
 
@@ -302,8 +316,22 @@ async def list_webhooks(bp: BrightpearlClient) -> list[dict]:
     return payload if isinstance(payload, list) else [payload]
 
 
+def setup_logging() -> None:
+    """Structured Cloud Logging on Cloud Run (K_SERVICE set); plain locally.
+
+    Cloud Logging severity levels make STALENESS_ALERT and exception traces
+    visible to log-based alerting and Error Reporting.
+    """
+    if os.environ.get("K_SERVICE"):
+        import google.cloud.logging
+
+        google.cloud.logging.Client().setup_logging(log_level=logging.INFO)
+    else:
+        logging.basicConfig(level=logging.INFO)
+
+
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    setup_logging()
     uvicorn.run(create_app(), host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
 
