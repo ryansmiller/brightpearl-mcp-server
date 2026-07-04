@@ -72,6 +72,15 @@ async def run(args: argparse.Namespace) -> None:
                 else:
                     n = await searcher.sync(table, full=args.full)
                 print(f"{table}: {n} rows")
+        elif args.command == "webhooks":
+            from .webhooks import list_webhooks, register_webhooks
+
+            if args.action == "register":
+                created = await register_webhooks(bp, args.url)
+                print(f"created subscriptions: {created or '(all already exist)'}")
+            hooks = await list_webhooks(bp)
+            for h in hooks:
+                print({k: h.get(k) for k in ("id", "subscribeTo", "uriTemplate")})
         elif args.command == "derived":
             derived = DerivedSyncer(bp, bq)
             if args.kind in ("prices", "all"):
@@ -99,6 +108,9 @@ def main() -> None:
     p.add_argument("--full", action="store_true")
     p = sub.add_parser("derived")
     p.add_argument("kind", choices=["prices", "availability", "all"])
+    p = sub.add_parser("webhooks")
+    p.add_argument("action", choices=["register", "list"])
+    p.add_argument("--url", help="ingest URL incl. ?token= (required for register)")
 
     asyncio.run(run(parser.parse_args()))
 

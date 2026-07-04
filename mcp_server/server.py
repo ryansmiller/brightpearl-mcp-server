@@ -291,10 +291,39 @@ def ensure_audit_table() -> None:
     _bq.create_table(table, exists_ok=True)
 
 
+class BearerAuthMiddleware:
+    """Minimal ASGI middleware: require Authorization: Bearer <MCP_BEARER_TOKEN>."""
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.token = token
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path") != "/healthz":
+            headers = dict(scope.get("headers") or [])
+            auth = headers.get(b"authorization", b"").decode()
+            if auth != f"Bearer {self.token}":
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"text/plain")],
+                })
+                await send({"type": "http.response.body", "body": b"unauthorized"})
+                return
+        await self.app(scope, receive, send)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     ensure_audit_table()
-    mcp.run()  # stdio transport; Phase 4 switches remote deploys to streamable-HTTP
+    if os.environ.get("MCP_TRANSPORT") == "http":
+        import uvicorn
+
+        token = os.environ["MCP_BEARER_TOKEN"]
+        app = BearerAuthMiddleware(mcp.http_app(), token)
+        uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    else:
+        mcp.run()  # stdio for local dev
 
 
 if __name__ == "__main__":
