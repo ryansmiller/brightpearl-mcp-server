@@ -113,8 +113,11 @@ product_option_values, contact_group_members, channels.
 
 **Known gaps (tracked, not yet implemented):**
 - Order/Product/Contact **custom-field values** — highest value (RollSize,
-  MOQ); metadata endpoints exist per docs but paths 404'd on first probe
-  (`custom-field-metadata`); needs path research
+  MOQ). Per Ryan: custom fields always belong to an order/product/contact, so
+  no separate tables — promote values to typed columns on those three tables
+  at ingest. Still to research: where values appear (extra request param on
+  the detail GET vs per-entity custom-field GET) since bare detail payloads
+  don't include them
 - `supplier_payments` search returned exactly 500 vs SyncHub's 7,001 —
   investigate a default server-side filter and paginate past it
 - **Order notes** (order-service order-note GET) and **contact postal
