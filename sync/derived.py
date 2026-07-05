@@ -55,6 +55,20 @@ class DerivedSyncer:
         self.bp = bp
         self.bq = bq
 
+    def _record(self, table: str, rows: int) -> None:
+        """Mark the run in sync_state so freshness monitoring covers derived tables."""
+        self.bq.upsert(
+            "sync_state",
+            [{
+                "resource": table,
+                "watermark_id": None,
+                "watermark_updated_on": None,
+                "last_run_at": _now(),
+                "last_run_kind": "derived",
+                "last_run_rows": rows,
+            }],
+        )
+
     def _product_ids(self, where: str = "TRUE") -> list[int]:
         rows = self.bq.query(
             f"SELECT product_id FROM `{self.bq._table_ref('products')}` "
@@ -86,6 +100,7 @@ class DerivedSyncer:
             if i % 5000 == 0:
                 logger.info("product_prices: fetched %d/%d products", i + len(chunk), len(ids))
         n = self.bq.truncate_load("product_prices", rows, PRICE_SCHEMA)
+        self._record("product_prices", n)
         logger.info("product_prices: %d rows", n)
         return n
 
@@ -109,13 +124,10 @@ class DerivedSyncer:
         now = _now()
         for i in range(0, len(ids), CHUNK):
             chunk = ids[i : i + CHUNK]
-            id_set = ",".join(map(str, chunk))
-            try:
-                payload = await self.bp.get(f"product-service/product/{id_set}/supplier")
-            except BrightpearlError as e:
-                logger.warning("supplier chunk failed (%s); skipping %d ids", e, len(chunk))
-                continue
-            for pid, supplier_ids in (payload or {}).items():
+            # Only known-bad-id 400s are tolerated (split-and-skip); any other
+            # error aborts BEFORE truncate_load so the existing table survives.
+            payload = await self._fetch_suppliers(chunk)
+            for pid, supplier_ids in payload.items():
                 for sid in supplier_ids or []:
                     rows.append(
                         {
@@ -127,9 +139,33 @@ class DerivedSyncer:
                     )
             if i % 10000 == 0:
                 logger.info("product_suppliers: fetched %d/%d products", i + len(chunk), len(ids))
+        # Reaching here means every fetch succeeded (anything unexpected
+        # raised above), so an empty snapshot is the truth — truncate away.
         n = self.bq.truncate_load("product_suppliers", rows, SUPPLIER_SCHEMA)
+        self._record("product_suppliers", n)
         logger.info("product_suppliers: %d rows", n)
         return n
+
+    async def _fetch_suppliers(self, chunk: list[int]) -> dict:
+        id_set = ",".join(map(str, chunk))
+        try:
+            payload = await self.bp.get(f"product-service/product/{id_set}/supplier")
+        except BrightpearlError as e:
+            if e.status_code == 400 and len(chunk) > 1:
+                mid = len(chunk) // 2
+                left = await self._fetch_suppliers(chunk[:mid])
+                right = await self._fetch_suppliers(chunk[mid:])
+                return {**left, **right}
+            if e.status_code == 400:
+                return {}  # isolated bad id (deleted product) — skip it
+            raise
+        if payload is not None and not isinstance(payload, dict):
+            # A shape we don't understand must abort the run, not quietly
+            # produce an empty snapshot that truncates good data
+            raise BrightpearlError(
+                f"unexpected supplier payload for ids {id_set}: {type(payload).__name__}"
+            )
+        return payload or {}
 
     async def _fetch_availability(self, chunk: list[int]) -> dict:
         """Fetch a chunk, splitting on 400s (invalid ids poison whole chunks)."""
@@ -193,5 +229,6 @@ class DerivedSyncer:
                         }
                     )
         n = self.bq.truncate_load("product_availability", rows, AVAILABILITY_SCHEMA)
+        self._record("product_availability", n)
         logger.info("product_availability: %d rows", n)
         return n

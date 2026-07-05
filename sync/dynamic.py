@@ -132,7 +132,11 @@ class SearchDumpSyncer:
             try:
                 page = await self.bp.search(service, resource, filters=filters, first_result=first)
             except BrightpearlError as e:
-                if filters and first == 1:
+                # Only a 400 means "the API rejected this filter/sort" — a
+                # misconfiguration worth degrading gracefully for. Throttling,
+                # auth, 5xx, and transport errors must fail fast, not trigger
+                # a full scan that eats the shared request budget.
+                if filters and first == 1 and e.status_code == 400:
                     logger.warning("%s: filter %s rejected (%s); falling back to full scan",
                                    table, filters, e)
                     filters, truncate_mode, descending = {}, False, False

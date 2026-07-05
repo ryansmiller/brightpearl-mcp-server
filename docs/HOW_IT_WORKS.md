@@ -243,14 +243,20 @@ tax codes...): fetch the list, store `id`/`name` best-effort + full
 
 ### derived.py — fan-out loaders
 
-`product_prices` and `product_availability` have no search endpoint; you ask
-for them *per product*. So these loaders read product ids **from our own
-BigQuery products table**, chunk them 100 at a time, and snapshot the
-results (truncate-reload).
+`product_prices`, `product_suppliers`, and `product_availability` have no
+search endpoint; you ask for them *per product*. So these loaders read
+product ids **from our own BigQuery products table**, chunk them 100 at a
+time, and snapshot the results (truncate-reload). Each run records itself
+in `sync_state` (`last_run_kind: "derived"`) so freshness monitoring covers
+these tables too.
 
 `_fetch_availability` shows a useful trick: one bad id in a chunk 400s the
 whole request, so on a 400 it **recursively splits the chunk in half** until
 bad ids are isolated and skipped — binary search as error handling.
+`_fetch_suppliers` does the same, with one extra rule: only a 400 ("bad id")
+is tolerated. Any other error — throttle, auth, 5xx, unexpected payload
+shape — aborts the run *before* the truncate, so a flaky API call can never
+replace a good table with a partial snapshot.
 
 ### cli.py — the entry point
 

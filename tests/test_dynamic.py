@@ -23,15 +23,15 @@ def _page(ids: list[int], first: int, available: int) -> SearchPage:
 class FakeBP:
     """Serves pre-built pages; records the filters each search used."""
 
-    def __init__(self, pages: list[SearchPage], reject_filters: bool = False):
+    def __init__(self, pages: list[SearchPage], fail_filtered_with: BrightpearlError | None = None):
         self.pages = pages
-        self.reject_filters = reject_filters
+        self.fail_filtered_with = fail_filtered_with
         self.calls: list[dict] = []
 
     async def search(self, service, resource, *, filters=None, first_result=1):
         self.calls.append(dict(filters or {}))
-        if self.reject_filters and filters:
-            raise BrightpearlError("CMNC-018 cannot be parsed as: INTEGER")
+        if self.fail_filtered_with and filters:
+            raise self.fail_filtered_with
         # pages are keyed by first_result order
         for page in self.pages:
             if page.first_result == first_result:
@@ -105,7 +105,10 @@ async def test_id_mode_first_sync_scans_everything_unfiltered():
 
 async def test_rejected_sort_falls_back_to_full_scan():
     bq = FakeBQ(watermark_id=100)
-    bp = FakeBP([_page([101, 102], first=1, available=2)], reject_filters=True)
+    bp = FakeBP(
+        [_page([101, 102], first=1, available=2)],
+        fail_filtered_with=BrightpearlError("CMNC-018 cannot be parsed as: INTEGER", 400),
+    )
     syncer = SearchDumpSyncer(bp, bq)
 
     total = await syncer.sync("journal_rows")
@@ -113,6 +116,25 @@ async def test_rejected_sort_falls_back_to_full_scan():
     # first call filtered (rejected), second unfiltered; early-stop disabled
     assert bp.calls == [{"sort": "journalRowId.DESC"}, {}]
     assert total == 2
+
+
+async def test_transient_errors_do_not_trigger_full_scan():
+    # a 503 (throttle exhaustion) must fail fast, not burn the request
+    # budget on an unfiltered scan
+    bq = FakeBQ(watermark_id=100)
+    bp = FakeBP(
+        [_page([101, 102], first=1, available=2)],
+        fail_filtered_with=BrightpearlError("service unavailable", 503),
+    )
+    syncer = SearchDumpSyncer(bp, bq)
+
+    try:
+        await syncer.sync("journal_rows")
+        raise AssertionError("expected BrightpearlError")
+    except BrightpearlError:
+        pass
+    assert bp.calls == [{"sort": "journalRowId.DESC"}]  # no unfiltered retry
+    assert bq.upserts == []  # nothing written, table untouched
 
 
 def _writer_with_fake_client(fake_client) -> BigQueryWriter:
