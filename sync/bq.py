@@ -82,10 +82,15 @@ class BigQueryWriter:
             )
 
     def mark_deleted(self, table: str, key_field: str, ids: list[int]) -> int:
-        """Soft-delete records (destroyed webhooks / reconciliation sweeps)."""
+        """Soft-delete records (destroyed webhooks / reconciliation sweeps).
+
+        ids are interpolated into the SQL, so they MUST be ints — coerced here
+        rather than trusting callers, since a future caller passing raw strings
+        would otherwise open a DML-injection path.
+        """
         if not ids:
             return 0
-        id_list = ", ".join(str(i) for i in ids)
+        id_list = ", ".join(str(int(i)) for i in ids)
         self._dml(
             f"UPDATE `{self._table_ref(table)}` "
             f"SET is_deleted = TRUE, deleted_at = CURRENT_TIMESTAMP() "
@@ -195,7 +200,8 @@ class BigQueryWriter:
             return 0
         target = self._table_ref(name)
         cols = ", ".join(f.name for f in (schema or TABLES[name]["schema"]))
-        ids = ", ".join(str(i) for i in parent_ids)
+        # Coerce to int — parent_ids are interpolated into the DELETE below.
+        ids = ", ".join(str(int(i)) for i in parent_ids)
         delete_sql = f"DELETE FROM `{target}` WHERE {parent_field} IN ({ids});"
         if not rows:
             self._dml(delete_sql)

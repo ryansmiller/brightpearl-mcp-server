@@ -139,9 +139,26 @@ product_option_values, contact_group_members, channels.
   webhook enqueues in-request, /process runs under OIDC-signed callbacks with
   automatic retry; sync-ingest back on request-based billing (~$35/mo saved)
 - Auth separation (partial): /process verifies OIDC; /tick + /alert-check
-  still use the shared query token (constant-time compared) — move Scheduler
-  to OIDC eventually
+  still use the shared token (constant-time compared) — move Scheduler
+  to OIDC eventually. Token now preferred in the `X-Auth-Token` header (query
+  param still accepted for /webhook, which Brightpearl can only template into
+  the URL). **/alert-check is now POST-only** — its Scheduler job must POST
+  with the header, not GET with `?token=`.
 - Per-caller identity in mcp_audit (needs per-user bearer tokens)
+
+**Security-review follow-ups (2026-07-05):**
+- [x] run_bigquery_sql guard hardened: reject multi-statement scripts and
+  BigQuery scripting/dynamic-SQL keywords (EXECUTE IMMEDIATE, DECLARE, BEGIN…)
+  that slipped past the old keyword+dry-run checks (tests/test_mcp_guard.py)
+- [x] MCP bearer token compared constant-time (was plain `!=`)
+- [x] **IAM: MCP server runs as its own read-only SA** (`mcp-reader@…`):
+  project-level `dataViewer` + `jobUser`, table-level `dataEditor` on
+  `mcp_audit` only, per-secret `secretAccessor` on mcp-bearer-token +
+  brightpearl-app-ref + brightpearl-account-token (NOT webhook-token).
+  Deployed as mcp-server-00009 (2026-07-05); verified reads + audit writes
+  work and no write role exists outside mcp_audit. The SQL guard is now
+  defense-in-depth, not the sole control. sync-ingest stays on `bp-runtime`.
+  Note: ensure_audit_table() is get-first because the SA can't create tables.
 
 ## Phases
 

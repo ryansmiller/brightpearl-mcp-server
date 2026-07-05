@@ -161,9 +161,18 @@ async def dispatch(resource: str, ids: list[int]) -> str:
 
 
 def _check_token(request: Request) -> bool:
+    """Shared-secret check, constant-time.
+
+    Brightpearl can only template the secret into the webhook URL, so /webhook
+    has to accept it as a query param. Our own callers (Cloud Scheduler hitting
+    /tick and /alert-check) send it in the X-Auth-Token header instead, keeping
+    it out of request logs / proxy logs / browser history.
+    """
     expected = os.environ.get("WEBHOOK_TOKEN", "")
-    supplied = request.query_params.get("token", "")
-    return bool(expected) and hmac.compare_digest(supplied, expected)
+    if not expected:
+        return False
+    supplied = request.headers.get("x-auth-token") or request.query_params.get("token", "")
+    return hmac.compare_digest(supplied, expected)
 
 
 def _check_oidc(request: Request) -> bool:
@@ -322,7 +331,9 @@ def create_app() -> Starlette:
         Route("/process", process_task, methods=["POST"]),
         Route("/tick/{tier}", tick, methods=["POST"]),
         Route("/health", healthz, methods=["GET"]),
-        Route("/alert-check", alert_check, methods=["POST", "GET"]),
+        # POST-only: a GET would invite passing the token in the query string,
+        # where it lands in access logs. Scheduler sends X-Auth-Token instead.
+        Route("/alert-check", alert_check, methods=["POST"]),
     ])
 
 

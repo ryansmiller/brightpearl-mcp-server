@@ -8,6 +8,7 @@ Run locally (stdio):   uv run python -m mcp_server.server
 Remote (Phase 4):      streamable-HTTP on Cloud Run
 """
 
+import hmac
 import json
 import logging
 import os
@@ -95,8 +96,14 @@ def _assert_only_brightpearl(sql: str) -> None:
             )
 
 
+# Write/DDL keywords plus BigQuery scripting/dynamic-SQL constructs. EXECUTE
+# IMMEDIATE is the important one: it runs a string the static checks below
+# can't see into, so a mutation assembled by concatenation
+# (EXECUTE IMMEDIATE 'DEL' || 'ETE ...') would never trip a keyword match and
+# its target table never shows up in the dry-run's referenced_tables.
 _SQL_FORBIDDEN = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|CREATE|ALTER|TRUNCATE|GRANT|CALL|EXPORT|LOAD)\b",
+    r"\b(INSERT|UPDATE|DELETE|MERGE|DROP|CREATE|ALTER|TRUNCATE|GRANT|REVOKE|CALL|EXPORT"
+    r"|LOAD|EXECUTE|DECLARE|BEGIN|SET|FOR|WHILE|LOOP|ASSERT)\b",
     re.IGNORECASE,
 )
 
@@ -110,12 +117,18 @@ def run_bigquery_sql(sql: str) -> str:
     get_schema to see available tables, views, and columns first.
     """
     stripped = re.sub(r"--.*?$|/\*.*?\*/", "", sql, flags=re.MULTILINE | re.DOTALL).strip()
+    # A single trailing ';' is fine; anything after it means a second statement
+    # was smuggled in (SELECT 1; EXECUTE IMMEDIATE ...) — the prefix check only
+    # sees the harmless first statement, so reject multi-statement scripts.
+    if stripped.rstrip(";").count(";"):
+        _audit("run_bigquery_sql", {"sql": sql}, False, "rejected: multiple statements")
+        return "Error: only a single SELECT/WITH statement is allowed."
     if not re.match(r"^(SELECT|WITH)\b", stripped, re.IGNORECASE):
         _audit("run_bigquery_sql", {"sql": sql}, False, "rejected: not a SELECT")
         return "Error: only SELECT/WITH queries are allowed."
     if _SQL_FORBIDDEN.search(stripped):
         _audit("run_bigquery_sql", {"sql": sql}, False, "rejected: forbidden keyword")
-        return "Error: statement contains a write/DDL keyword; only reads are allowed."
+        return "Error: statement contains a write/DDL/scripting keyword; only reads are allowed."
     try:
         _assert_only_brightpearl(stripped)
         rows = _query(stripped)
@@ -281,9 +294,11 @@ async def get_order_live(order_id: int) -> str:
 async def get_stock_live(product_ids: list[int]) -> str:
     """Fetch this-second stock availability for up to 100 products from the Brightpearl API."""
     try:
+        # product_ids is typed list[int]; only ever build API paths from typed
+        # ids, never a caller-supplied string, so nothing can escape the path.
         payload = await _brightpearl().get(
             "warehouse-service/product-availability/"
-            + ",".join(str(i) for i in product_ids[:100]),
+            + ",".join(str(int(i)) for i in product_ids[:100]),
             priority=True,
         )
         _audit("get_stock_live", {"product_ids": product_ids}, True)
@@ -303,8 +318,14 @@ AUDIT_SCHEMA = [
 
 
 def ensure_audit_table() -> None:
-    table = bigquery.Table(f"{PROJECT}.{DATASET}.mcp_audit", schema=AUDIT_SCHEMA)
-    _bq.create_table(table, exists_ok=True)
+    """Create mcp_audit if missing, but check first: the server runs as a
+    read-only SA (table-level write on mcp_audit only), so an unconditional
+    create_table would 403 on the dataset even with exists_ok=True."""
+    ref = f"{PROJECT}.{DATASET}.mcp_audit"
+    try:
+        _bq.get_table(ref)
+    except Exception:
+        _bq.create_table(bigquery.Table(ref, schema=AUDIT_SCHEMA))
 
 
 class BearerAuthMiddleware:
@@ -318,7 +339,9 @@ class BearerAuthMiddleware:
         if scope["type"] == "http" and scope.get("path") != "/health":
             headers = dict(scope.get("headers") or [])
             auth = headers.get(b"authorization", b"").decode()
-            if auth != f"Bearer {self.token}":
+            # Constant-time compare: a plain != short-circuits on the first
+            # differing byte and leaks the token prefix over many requests.
+            if not hmac.compare_digest(auth, f"Bearer {self.token}"):
                 await send({
                     "type": "http.response.start",
                     "status": 401,

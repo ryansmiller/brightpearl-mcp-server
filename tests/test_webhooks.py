@@ -103,7 +103,7 @@ def test_alert_check_flags_stale_and_missing(app, monkeypatch):
         {"resource": "journal_rows", "lag": 999},  # beyond warm budget
     ]
     fake.bq._table_ref = lambda n: f"p.d.{n}"
-    resp = client.get("/alert-check?token=sekret")
+    resp = client.post("/alert-check", headers={"x-auth-token": "sekret"})
     body = resp.json()
     assert body["ok"] is False
     problems = {v["resource"]: v["problem"] for v in body["violations"]}
