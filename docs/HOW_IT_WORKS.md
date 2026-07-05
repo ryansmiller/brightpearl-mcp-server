@@ -182,6 +182,11 @@ All writes go through a **staging + MERGE** pattern, which is how you do an
    client resubmit a job and BigQuery answers "409 job already exists," we
    retry once under a fresh job id. (This exact failure killed a 77k-product
    backfill once; now it self-heals.)
+6. `_dml()` wraps every mutating statement (MERGE, DELETE+INSERT, UPDATE)
+   with exponential backoff on BigQuery's "concurrent update" abort —
+   BigQuery only lets one statement mutate a table at a time, and a webhook
+   task can collide with a scheduled sweep hitting the same table. Retrying
+   is safe precisely because of the idempotency above.
 
 ### pipeline.py — detail-resource sync (orders/products/contacts)
 
@@ -217,8 +222,12 @@ generated. The trick: **Brightpearl's search API describes its own columns**
 Each resource is ~6 lines of config in `resources.py`. The `incremental`
 field picks one of three update strategies:
 
-- `("id", col)` — append-only data (journal rows): next sweep asks only for
-  ids greater than the max we've seen. Cheapest possible.
+- `("id", col)` — append-only data (journal rows): sort the search
+  newest-first (`sort=col.DESC`) and stop paging the moment we see an id we
+  already have. Cheapest possible. (We'd prefer a range filter — "ids greater
+  than X" — but Brightpearl rejects range syntax on INTEGER/IDSET columns,
+  and a rejected filter used to silently degrade into a 2,900-request full
+  scan every 30 minutes.)
 - `("updated", col)` — resources with a filterable `updatedOn`
   (goods movements): timestamp watermark, like the detail pipeline.
 - `("full", None)` — mutable data with no update timestamp (goods-out notes:

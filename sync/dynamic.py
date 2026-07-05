@@ -106,9 +106,14 @@ class SearchDumpSyncer:
 
         filters: dict[str, Any] = {}
         last_id, last_ts = (None, None) if full else self._watermarks(table)
+        descending = False
         if not full:
             if mode == "id" and last_id is not None:
-                filters[col] = f"{last_id + 1}/"
+                # Brightpearl rejects the trailing-slash range syntax on these
+                # id columns (INTEGER/IDSET "cannot be parsed"), so instead
+                # page newest-first and stop at the stored watermark
+                filters["sort"] = f"{col}.DESC"
+                descending = True
             elif mode == "updated" and last_ts is not None:
                 # overlap guards against late indexing / clock skew; upserts
                 # make re-reading the overlap free
@@ -130,15 +135,25 @@ class SearchDumpSyncer:
                 if filters and first == 1:
                     logger.warning("%s: filter %s rejected (%s); falling back to full scan",
                                    table, filters, e)
-                    filters, truncate_mode = {}, False
+                    filters, truncate_mode, descending = {}, False, False
                     continue
                 raise
             if schema is None:
                 schema = self._schema_for(page.columns)
                 self.bq.ensure_table(table, schema)
             watermark_col = snake(col) if col else None
+            caught_up = False
             for api_row in page.results:
                 row = self._to_row(api_row, page.columns)
+                if (
+                    descending
+                    and isinstance(row.get(key), int)
+                    and row[key] <= last_id
+                ):
+                    # sorted newest-first: everything from here on is already
+                    # synced
+                    caught_up = True
+                    break
                 if truncate_mode:
                     all_rows.append(row)
                 else:
@@ -154,7 +169,7 @@ class SearchDumpSyncer:
                 logger.info("%s: %d rows merged (through result %d/%d)",
                             table, total, page.last_result, page.results_available)
                 buffer = []
-            if not page.has_more:
+            if caught_up or not page.has_more:
                 break
             first = page.next_first_result
 

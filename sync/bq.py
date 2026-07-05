@@ -2,15 +2,21 @@
 
 import logging
 import os
+import random
+import time
 import uuid
 from typing import Any
 
-from google.api_core.exceptions import Conflict
+from google.api_core.exceptions import BadRequest, Conflict
 from google.cloud import bigquery
 
 from .schema import TABLES
 
 logger = logging.getLogger(__name__)
+
+# Attempts for DML that can collide with a concurrent mutation of the same
+# table (parallel webhook tasks, scheduled ticks)
+_CONCURRENT_ATTEMPTS = 5
 
 
 class BigQueryWriter:
@@ -38,6 +44,27 @@ class BigQueryWriter:
     def _table_ref(self, name: str) -> str:
         return f"{self.project}.{self.dataset}.{name}"
 
+    def _dml(self, sql: str):
+        """query_and_wait with backoff on concurrent-update aborts.
+
+        BigQuery allows one mutating statement per table at a time; when two
+        collide it aborts one with a 400 mentioning "concurrent update".
+        Retrying is safe here: every mutation in this module is idempotent
+        (keyed MERGEs, DELETE+INSERT transactions, soft-delete UPDATEs).
+        """
+        for attempt in range(_CONCURRENT_ATTEMPTS):
+            try:
+                return self.client.query_and_wait(sql)
+            except BadRequest as e:
+                if "concurrent update" not in str(e) or attempt == _CONCURRENT_ATTEMPTS - 1:
+                    raise
+                delay = 2**attempt + random.random()
+                logger.warning(
+                    "concurrent update abort (attempt %d/%d); retrying in %.1fs",
+                    attempt + 1, _CONCURRENT_ATTEMPTS, delay,
+                )
+                time.sleep(delay)
+
     def ensure_tables(self) -> None:
         for name, spec in TABLES.items():
             table = bigquery.Table(self._table_ref(name), schema=spec["schema"])
@@ -59,7 +86,7 @@ class BigQueryWriter:
         if not ids:
             return 0
         id_list = ", ".join(str(i) for i in ids)
-        self.client.query_and_wait(
+        self._dml(
             f"UPDATE `{self._table_ref(table)}` "
             f"SET is_deleted = TRUE, deleted_at = CURRENT_TIMESTAMP() "
             f"WHERE {key_field} IN ({id_list}) AND NOT IFNULL(is_deleted, FALSE)"
@@ -146,7 +173,7 @@ class BigQueryWriter:
         if name == "sync_state":
             sql = sql.replace("ORDER BY when_upserted DESC", "ORDER BY last_run_at DESC")
         try:
-            self.client.query_and_wait(sql)
+            self._dml(sql)
         finally:
             self._drop(staging)
         return len(rows)
@@ -171,11 +198,11 @@ class BigQueryWriter:
         ids = ", ".join(str(i) for i in parent_ids)
         delete_sql = f"DELETE FROM `{target}` WHERE {parent_field} IN ({ids});"
         if not rows:
-            self.client.query_and_wait(delete_sql)
+            self._dml(delete_sql)
             return 0
         staging = self._load_staging(name, rows, schema)
         try:
-            self.client.query_and_wait(
+            self._dml(
                 "BEGIN TRANSACTION;\n"
                 + delete_sql
                 + f"\nINSERT INTO `{target}` ({cols}) SELECT {cols} FROM `{staging}`;\n"
