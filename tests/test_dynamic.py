@@ -8,15 +8,16 @@ from sync.bq import BigQueryWriter
 from sync.dynamic import SearchDumpSyncer
 
 JOURNAL_COLUMNS = [{"name": "journalRowId", "reportDataType": "INTEGER"}]
+PAYMENT_COLUMNS = [{"name": "paymentId", "reportDataType": "IDSET"}]
 
 
-def _page(ids: list[int], first: int, available: int) -> SearchPage:
+def _page(ids: list[int], first: int, available: int, columns=JOURNAL_COLUMNS) -> SearchPage:
     return SearchPage(
-        results=[{"journalRowId": i} for i in ids],
+        results=[{c["name"]: i for c in columns} for i in ids],
         results_available=available,
         first_result=first,
         last_result=first + len(ids) - 1,
-        columns=JOURNAL_COLUMNS,
+        columns=columns,
     )
 
 
@@ -135,6 +136,22 @@ async def test_transient_errors_do_not_trigger_full_scan():
         pass
     assert bp.calls == [{"sort": "journalRowId.DESC"}]  # no unfiltered retry
     assert bq.upserts == []  # nothing written, table untouched
+
+
+async def test_page_past_available_ignores_misreported_total():
+    # supplier-payment-search always claims resultsAvailable=500; full pages
+    # must keep paging until a short page arrives
+    bq = FakeBQ(watermark_id=None)
+    page1 = _page(list(range(1, 501)), first=1, available=500, columns=PAYMENT_COLUMNS)
+    page2 = _page(list(range(501, 521)), first=501, available=500, columns=PAYMENT_COLUMNS)
+    bp = FakeBP([page1, page2])
+    syncer = SearchDumpSyncer(bp, bq)
+
+    total = await syncer.sync("supplier_payments")
+
+    assert total == 520
+    assert len(bp.calls) == 2  # short page 2 ended the scan
+    assert bq.recorded_state()["watermark_id"] == 520
 
 
 def _writer_with_fake_client(fake_client) -> BigQueryWriter:

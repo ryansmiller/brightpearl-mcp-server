@@ -22,6 +22,7 @@ from .resources import REFERENCE_GETS, SEARCH_DUMPS
 logger = logging.getLogger(__name__)
 
 LOAD_CHUNK = 25_000  # rows buffered before each staging load + MERGE
+SEARCH_PAGE_SIZE = 500  # Brightpearl's max/default resource-search page
 
 # Brightpearl reportDataType → BigQuery type. Money comes through as STRING
 # ("5652.10"); semantic views CAST as needed.
@@ -173,8 +174,14 @@ class SearchDumpSyncer:
                 logger.info("%s: %d rows merged (through result %d/%d)",
                             table, total, page.last_result, page.results_available)
                 buffer = []
-            if caught_up or not page.has_more:
+            if caught_up:
                 break
+            if not page.has_more:
+                # Some searches (see supplier_payments) misreport
+                # resultsAvailable; a full page means there may be more
+                if not (spec.get("page_past_available")
+                        and len(page.results) == SEARCH_PAGE_SIZE):
+                    break
             first = page.next_first_result
 
         if truncate_mode:

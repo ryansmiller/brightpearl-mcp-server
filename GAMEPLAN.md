@@ -113,14 +113,15 @@ Later probe unlocked and synced: supplier_payments, categories
 product_option_values, contact_group_members, channels.
 
 **Known gaps (tracked, not yet implemented):**
-- Order/Product/Contact **custom-field values** — highest value (RollSize,
-  MOQ). Per Ryan: custom fields always belong to an order/product/contact, so
-  no separate tables — promote values to typed columns on those three tables
-  at ingest. Still to research: where values appear (extra request param on
-  the detail GET vs per-entity custom-field GET) since bare detail payloads
-  don't include them
-- `supplier_payments` search returned exactly 500 vs SyncHub's 7,001 —
-  investigate a default server-side filter and paginate past it
+- ~~Order/Product/Contact **custom-field values**~~ — DONE 2026-07-04:
+  `includeOptional=customFields` on detail GETs lands them in `raw_payload`;
+  verified 2026-07-05 that 0 of 391k orders/products/contacts are missing
+  the key. Views extract the useful ones (see `sync/views.py`)
+- ~~`supplier_payments` returned exactly 500 vs SyncHub's 7,001~~ — root
+  cause found 2026-07-05: supplier-payment-search always misreports
+  `resultsAvailable=500` (and silently ignores `paymentId` range filters),
+  so pagination stopped after one page. Fixed with `page_past_available`
+  config flag + full re-scan
 - **Order notes** (order-service order-note GET) and **contact postal
   addresses** (GET per address id; order payloads embed delivery addresses so
   partially covered)
@@ -213,4 +214,5 @@ Notes: contact.* and order.created are not subscribable on this account (order.m
 - **2026-07-03 (later)** — Phase 0 nearly complete: GCP project `brightpearl-mcp-server` created with billing (freed a billing slot by unlinking dormant `alpine-task-194105`), APIs enabled, dataset `brightpearl` created, Brightpearl private-app credentials in `.env`. Remaining: ADC login. Next: Phase 1 (Brightpearl API client).
 - **2026-07-03 (evening)** — Phase 0 complete (ADC verified). Phase 1 complete: async client with shared rate limiter, 7 unit tests passing, live smoke test pulled real orders. Next: Phase 2 (BigQuery schema + batch sync).
 - **2026-07-04** — Phases 2–5 all complete: full warehouse (35+ tables, ~4.5M rows), semantic views, MCP server (local stdio + remote bearer-auth HTTP), Cloud Run deployment with webhooks + tiered scheduled sweeps, staleness alerting, deleted-record handling, integration tests, onboarding docs. Remaining work tracked under "Known gaps" (custom-field completion for products/contacts in progress, supplier_payments anomaly, minor coverage gaps).
-- **2026-07-05** — Fixed the staleness cascade found in Cloud Run logs: id-mode search dumps (journal_rows, customer/supplier_payments) were silently full-scanning every warm tick because Brightpearl rejects range filters on INTEGER/IDSET columns; replaced with sort-DESC + early-stop at the watermark (2,900 requests/run → ~1). Added `_dml()` backoff on BigQuery "concurrent update" aborts and serialized the webhook-events Cloud Tasks queue (was 1000 concurrent), fixing the order_rows transaction-abort retry storms. Deployed as sync-ingest-00011; verified incremental runs return 0 rows with no fallback warnings. Bonus: supplier_payments now has a watermark recorded (its null watermark was the "anomaly").
+- **2026-07-05** — Fixed the staleness cascade found in Cloud Run logs: id-mode search dumps (journal_rows, customer/supplier_payments) were silently full-scanning every warm tick because Brightpearl rejects range filters on INTEGER/IDSET columns; replaced with sort-DESC + early-stop at the watermark (2,900 requests/run → ~1). Added `_dml()` backoff on BigQuery "concurrent update" aborts and serialized the webhook-events Cloud Tasks queue (was 1000 concurrent), fixing the order_rows transaction-abort retry storms. Deployed as sync-ingest-00011; verified incremental runs return 0 rows with no fallback warnings.
+- **2026-07-05 (later)** — Applied round-2 external review (derived loaders record sync_state, fallback-to-full-scan requires a 400, malformed supplier payloads abort before truncate); deployed as sync-ingest-00012. Backfill audit: custom fields complete everywhere; the real `supplier_payments` anomaly root-caused — Brightpearl misreports `resultsAvailable=500` for supplier-payment-search and ignores paymentId range filters, so scans stopped at one page (table had ids 1–500 + 6537–7036 only). Added `page_past_available` paging flag and re-scanned to recover all ~7k payments.

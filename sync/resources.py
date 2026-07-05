@@ -32,6 +32,11 @@ SEARCH_DUMPS: dict[str, dict] = {
         "key": "paymentId",
         "incremental": ("id", "paymentId"),
         "tier": "warm",
+        # Brightpearl bug (probed 2026-07-05): supplier-payment-search always
+        # reports resultsAvailable=500 no matter the true count (~7k), and
+        # silently ignores paymentId range filters. firstResult paging past
+        # 500 works fine, so keep paging while pages come back full.
+        "page_past_available": True,
     },
     "goods_movements": {
         "search": ("warehouse-service", "goods-movement"),
