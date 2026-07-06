@@ -8,6 +8,29 @@ Custom fields (PCF_*) are extracted from raw_payload JSON — see GAMEPLAN's
 storage-format decision.
 """
 
+# Sales orders in "Pending - ..." statuses aren't really sales yet — quotes/
+# estimates, drafts, unprocessed Amazon orders, sample-book batches — and
+# Cancelled orders never happened. None of them may count as revenue, so every
+# sales-facing view filters on this predicate (business rule, decided 2026-07).
+# Belt and braces: the name match auto-catches newly created pending statuses,
+# the pinned ids survive renames. Assumes the orders table is aliased `o`.
+REPORTABLE_SO = (
+    "NOT IFNULL("
+    "STARTS_WITH(LOWER(o.order_status_name), 'pending') "
+    "OR LOWER(o.order_status_name) = 'cancelled' "
+    "OR o.order_status_id IN (1, 5, 38, 47, 57, 77, 79)"  # 5 = Cancelled
+    ", FALSE)"
+)
+
+# Same rule for purchase orders: drafts aren't committed inbound inventory,
+# so they stay out of po_pipeline (and any PO reporting) until placed.
+REPORTABLE_PO = (
+    "NOT IFNULL("
+    "STARTS_WITH(LOWER(o.order_status_name), 'draft') "
+    "OR o.order_status_id IN (6)"  # 6 = Draft Purchase Order
+    ", FALSE)"
+)
+
 VIEWS: dict[str, str] = {
     # One row per sales-order line, with order context attached
     "sales_flat": """
@@ -44,6 +67,7 @@ VIEWS: dict[str, str] = {
         JOIN `{ds}.order_rows` r USING (order_id)
         LEFT JOIN `{ds}.channels` ch ON SAFE_CAST(ch.id AS INT64) = o.channel_id
         WHERE o.order_type_code = 'SO' AND NOT IFNULL(o.is_deleted, FALSE)
+          AND {reportable_so}
     """,
     # One row per product per warehouse with stock position + key custom fields
     "inventory_position": """
@@ -96,6 +120,7 @@ VIEWS: dict[str, str] = {
         JOIN `{ds}.order_rows` r USING (order_id)
         LEFT JOIN `{ds}.warehouses` w ON w.id = o.warehouse_id
         WHERE o.order_type_code = 'PO' AND NOT IFNULL(o.is_deleted, FALSE)
+          AND {reportable_po}
     """,
     # One row per customer with lifetime stats
     "customer_summary": """
@@ -116,7 +141,7 @@ VIEWS: dict[str, str] = {
         FROM `{ds}.contacts` c
         LEFT JOIN `{ds}.orders` o
           ON o.customer_contact_id = c.contact_id AND o.order_type_code = 'SO'
-          AND NOT IFNULL(o.is_deleted, FALSE)
+          AND NOT IFNULL(o.is_deleted, FALSE) AND {reportable_so}
         GROUP BY 1, 2, 3, 4, 5, 6, 7
     """,
     # Monthly P&L-style rollup from journal lines (debits/credits are strings)
@@ -142,7 +167,7 @@ def create_views(bq) -> list[str]:
     ds = f"{bq.project}.{bq.dataset}"
     created = []
     for name, sql in VIEWS.items():
-        body = sql.format(ds=ds)
+        body = sql.format(ds=ds, reportable_so=REPORTABLE_SO, reportable_po=REPORTABLE_PO)
         bq.client.query_and_wait(f"CREATE OR REPLACE VIEW `{ds}.{name}` AS {body}")
         created.append(name)
     return created

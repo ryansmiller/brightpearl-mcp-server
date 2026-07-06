@@ -31,8 +31,12 @@ mcp = FastMCP(
         "East Coast Fabrics' Brightpearl ERP data. Prefer the semantic views "
         "(sales_flat, inventory_position, po_pipeline, customer_summary, "
         "monthly_financials) via run_bigquery_sql for anything the dedicated "
-        "tools don't cover. Call get_schema first when writing SQL. Data is "
-        "synced near-real-time; check get_data_freshness when currency matters. "
+        "tools don't cover. Sales, revenue, and customer questions MUST be "
+        "answered from sales_flat or customer_summary, never the raw orders "
+        "table: the views exclude quotes, drafts, pending, and cancelled "
+        "orders that Brightpearl stores as sales orders but that are not real "
+        "sales. Call get_schema first when writing SQL. Data is synced "
+        "near-real-time; check get_data_freshness when currency matters. "
         "For this-second answers use the *_live tools."
     ),
 )
@@ -115,6 +119,11 @@ def run_bigquery_sql(sql: str) -> str:
     Only SELECT/WITH statements are allowed; scans are capped at 2GB. Table
     names must be dataset-qualified like `brightpearl.sales_flat`. Call
     get_schema to see available tables, views, and columns first.
+
+    For sales/revenue/customer questions always query the sales_flat or
+    customer_summary views, not the raw orders table: the views exclude
+    pending-status and cancelled orders (quotes, drafts, unprocessed Amazon
+    orders) that must never count as sales.
     """
     stripped = re.sub(r"--.*?$|/\*.*?\*/", "", sql, flags=re.MULTILINE | re.DOTALL).strip()
     # A single trailing ';' is fine; anything after it means a second statement
@@ -176,6 +185,7 @@ def query_sales(
 
     group_by: one of month | product | sku | customer | channel | state
     Returns revenue (net), quantity, order count, and margin per group.
+    Pending-status and cancelled orders are already excluded.
     """
     dims = {
         "month": "FORMAT_DATE('%Y-%m', DATE(placed_on))",
@@ -258,7 +268,10 @@ def search_customers(query: str) -> str:
 
 @mcp.tool
 def get_po_pipeline(supplier: str | None = None) -> str:
-    """Open purchase orders (inbound inventory) with lines, optionally filtered by supplier."""
+    """Open purchase orders (inbound inventory) with lines, optionally filtered by supplier.
+
+    Draft purchase orders are already excluded (not yet committed inventory).
+    """
     where = "AND LOWER(supplier_name) LIKE LOWER(@sup)" if supplier else ""
     params = [bigquery.ScalarQueryParameter("sup", "STRING", f"%{supplier}%")] if supplier else []
     rows = _query(

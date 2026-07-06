@@ -321,5 +321,10 @@ by `scripts/live_smoke.py`, run manually.
   `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` in `bq.ensure_tables()`.
 - **Change sweep cadence** → `tier` values in `resources.py` /
   `pipeline.RESOURCES` (wired to schedules in Phase 4).
+- **Change which order statuses count as real orders** → the `REPORTABLE_SO`
+  / `REPORTABLE_PO` predicates in `sync/views.py` (pending/cancelled sales
+  orders are filtered out of `sales_flat` and `customer_summary`, draft POs
+  out of `po_pipeline`), then redeploy the views with
+  `python -m sync.cli views`.
 - **Debug a failed sync** → `python -m sync.cli status` shows per-table
   watermarks and last run; every module logs via `logging` (stderr).
