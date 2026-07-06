@@ -8,7 +8,6 @@ Run locally (stdio):   uv run python -m mcp_server.server
 Remote (Phase 4):      streamable-HTTP on Cloud Run
 """
 
-import hmac
 import json
 import logging
 import os
@@ -18,12 +17,46 @@ from typing import Any
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_access_token
+from fastmcp.server.middleware import Middleware
 from google.cloud import bigquery
+from mcp.shared.exceptions import McpError
+from mcp.types import ErrorData
+from starlette.responses import PlainTextResponse
 
 from brightpearl_client import BrightpearlClient
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+PROJECT = os.environ["GCP_PROJECT_ID"]
+DATASET = os.environ.get("BQ_DATASET", "brightpearl")
+MAX_BYTES_BILLED = 2 * 1024**3  # 2 GB scan cap per query
+MAX_ROWS = 200
+
+ALLOWED_EMAIL_DOMAIN = "eastcoastfabrics.com"
+
+
+def _build_auth():
+    """Google OAuth for the remote HTTP deployment; users sign in with their
+    Workspace account instead of pasting a shared bearer token. Local stdio
+    dev returns None — same as before, auth only ever applied to HTTP."""
+    if os.environ.get("MCP_TRANSPORT") != "http":
+        return None
+    from fastmcp.server.auth.providers.google import GoogleProvider
+    from key_value.aio.stores.firestore import FirestoreStore
+
+    return GoogleProvider(
+        client_id=os.environ["GOOGLE_OAUTH_CLIENT_ID"],
+        client_secret=os.environ["GOOGLE_OAUTH_CLIENT_SECRET"],
+        base_url=os.environ["MCP_BASE_URL"],
+        required_scopes=["openid", "https://www.googleapis.com/auth/userinfo.email"],
+        # Cloud Run disk is ephemeral: FastMCP's default file-tree store would
+        # forget client registrations and refresh tokens on every cold start
+        # and send everyone back through the browser. Firestore persists them.
+        client_storage=FirestoreStore(project=PROJECT, default_collection="mcp_oauth"),
+    )
+
 
 mcp = FastMCP(
     "brightpearl",
@@ -39,12 +72,43 @@ mcp = FastMCP(
         "near-real-time; check get_data_freshness when currency matters. "
         "For this-second answers use the *_live tools."
     ),
+    auth=_build_auth(),
 )
 
-PROJECT = os.environ["GCP_PROJECT_ID"]
-DATASET = os.environ.get("BQ_DATASET", "brightpearl")
-MAX_BYTES_BILLED = 2 * 1024**3  # 2 GB scan cap per query
-MAX_ROWS = 200
+
+class RequireCompanyDomain(Middleware):
+    """Server-side domain gate. The OAuth consent screen is set to Internal
+    (Workspace-only) which already blocks outsiders; this is belt and braces
+    so a misconfigured consent screen can never expose company data."""
+
+    async def on_request(self, context, call_next):
+        token = get_access_token()  # None on stdio, where no auth layer runs
+        if token is not None:
+            email = ((token.claims or {}).get("email") or "").lower()
+            if not email.endswith(f"@{ALLOWED_EMAIL_DOMAIN}"):
+                raise McpError(ErrorData(
+                    code=-32003,
+                    message=f"access is restricted to {ALLOWED_EMAIL_DOMAIN} accounts",
+                ))
+        return await call_next(context)
+
+
+mcp.add_middleware(RequireCompanyDomain())
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request):
+    return PlainTextResponse("ok")
+
+
+def _user_email() -> str | None:
+    """Email of the signed-in user, for audit attribution. None on stdio."""
+    try:
+        token = get_access_token()
+        return (token.claims or {}).get("email") if token else None
+    except Exception:
+        return None
+
 
 _bq = bigquery.Client(project=PROJECT)
 _bp: BrightpearlClient | None = None
@@ -67,6 +131,7 @@ def _audit(tool: str, args: dict[str, Any], ok: bool, detail: str = "") -> None:
                 "arguments": json.dumps(args)[:2000],
                 "ok": ok,
                 "detail": detail[:500],
+                "user_email": _user_email(),
             }],
         )
     except Exception:  # audit must never break a tool call
@@ -327,42 +392,27 @@ AUDIT_SCHEMA = [
     bigquery.SchemaField("arguments", "STRING"),
     bigquery.SchemaField("ok", "BOOL"),
     bigquery.SchemaField("detail", "STRING"),
+    bigquery.SchemaField("user_email", "STRING"),
 ]
 
 
 def ensure_audit_table() -> None:
     """Create mcp_audit if missing, but check first: the server runs as a
     read-only SA (table-level write on mcp_audit only), so an unconditional
-    create_table would 403 on the dataset even with exists_ok=True."""
+    create_table would 403 on the dataset even with exists_ok=True.
+    Existing tables get any newly added AUDIT_SCHEMA columns appended
+    (schema update, not DML, so table-level WRITER is enough)."""
     ref = f"{PROJECT}.{DATASET}.mcp_audit"
     try:
-        _bq.get_table(ref)
+        table = _bq.get_table(ref)
     except Exception:
         _bq.create_table(bigquery.Table(ref, schema=AUDIT_SCHEMA))
-
-
-class BearerAuthMiddleware:
-    """Minimal ASGI middleware: require Authorization: Bearer <MCP_BEARER_TOKEN>."""
-
-    def __init__(self, app, token: str):
-        self.app = app
-        self.token = token
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope.get("path") != "/health":
-            headers = dict(scope.get("headers") or [])
-            auth = headers.get(b"authorization", b"").decode()
-            # Constant-time compare: a plain != short-circuits on the first
-            # differing byte and leaks the token prefix over many requests.
-            if not hmac.compare_digest(auth, f"Bearer {self.token}"):
-                await send({
-                    "type": "http.response.start",
-                    "status": 401,
-                    "headers": [(b"content-type", b"text/plain")],
-                })
-                await send({"type": "http.response.body", "body": b"unauthorized"})
-                return
-        await self.app(scope, receive, send)
+        return
+    have = {f.name for f in table.schema}
+    missing = [f for f in AUDIT_SCHEMA if f.name not in have]
+    if missing:
+        table.schema = list(table.schema) + missing
+        _bq.update_table(table, ["schema"])
 
 
 def main() -> None:
@@ -376,9 +426,8 @@ def main() -> None:
     if os.environ.get("MCP_TRANSPORT") == "http":
         import uvicorn
 
-        token = os.environ["MCP_BEARER_TOKEN"]
-        app = BearerAuthMiddleware(mcp.http_app(), token)
-        uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+        # Auth is Google OAuth via the GoogleProvider attached at construction
+        uvicorn.run(mcp.http_app(), host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
     else:
         mcp.run()  # stdio for local dev
 

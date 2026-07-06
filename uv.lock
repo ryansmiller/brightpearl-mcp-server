@@ -83,6 +83,7 @@ dependencies = [
     { name = "google-cloud-logging" },
     { name = "google-cloud-tasks" },
     { name = "httpx" },
+    { name = "py-key-value-aio", extra = ["firestore"] },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
@@ -106,6 +107,7 @@ requires-dist = [
     { name = "google-cloud-logging", specifier = ">=3.16.0" },
     { name = "google-cloud-tasks", specifier = ">=2.23.0" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "py-key-value-aio", extras = ["firestore"], specifier = ">=0.4.5" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pydantic-settings", specifier = ">=2.3" },
     { name = "python-dotenv", specifier = ">=1.0" },
@@ -596,6 +598,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a8/dd/1eef226e470369b26824a505c34482c0b493bc35fe8e0c6b003b5feca21a/google_cloud_core-2.6.0.tar.gz", hash = "sha256:e76149739f90fac1fc6757c09f47eaccb3145b54adbd7759b0f7c4b235f46c83", size = 36001, upload-time = "2026-05-07T08:04:04.124Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/84/4a/98da8930ab109c73d9a5d13782a9ebb81ea8c111f6d534a567b71d23e52b/google_cloud_core-2.6.0-py3-none-any.whl", hash = "sha256:6d63ac8e5eca6d9e4319d0a1e2265fadcd7f1049904378caecfa01cf52dd869e", size = 29390, upload-time = "2026-05-07T08:02:34.672Z" },
+]
+
+[[package]]
+name = "google-cloud-firestore"
+version = "2.28.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth" },
+    { name = "google-cloud-core" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/99/e2/7db007e30a84a2134a8c2880d3cfc30673f5f37f4e3b5b50ead6c3c61465/google_cloud_firestore-2.28.0.tar.gz", hash = "sha256:8211418bd746f3857046fc375138ddd0dfb023d5012545a9ade149be1461c6db", size = 651021, upload-time = "2026-06-25T23:39:43.754Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7e/96/6d58d540145b06d372a9ead34cf50ff17f35296cf9a8c43ccc141aa207ea/google_cloud_firestore-2.28.0-py3-none-any.whl", hash = "sha256:055daab3e5fb292f389b4e7d9e03dffb30f38a3463c23363f93d25569c933e59", size = 431943, upload-time = "2026-06-25T23:39:11.735Z" },
 ]
 
 [[package]]
@@ -1111,6 +1130,10 @@ wheels = [
 filetree = [
     { name = "aiofile" },
     { name = "anyio" },
+]
+firestore = [
+    { name = "google-auth" },
+    { name = "google-cloud-firestore" },
 ]
 keyring = [
     { name = "keyring" },

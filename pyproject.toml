@@ -10,6 +10,7 @@ dependencies = [
     "google-cloud-logging>=3.16.0",
     "google-cloud-tasks>=2.23.0",
     "httpx>=0.27",
+    "py-key-value-aio[firestore]>=0.4.5",
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "python-dotenv>=1.0",

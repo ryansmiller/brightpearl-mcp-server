@@ -6,19 +6,22 @@ order changes land in seconds via webhooks; everything else within 5–30 minute
 
 ## Connect Claude
 
+You sign in with your **@eastcoastfabrics.com Google account** — there are no
+tokens or secrets to copy.
+
 **Claude Code (terminal or desktop app):**
 
 ```sh
 claude mcp add --transport http brightpearl \
-  https://mcp-server-243337884757.us-east4.run.app/mcp \
-  --header "Authorization: Bearer <TOKEN>"
+  https://mcp-server-243337884757.us-east4.run.app/mcp
 ```
 
-Get `<TOKEN>` from Ryan (it's the `mcp-bearer-token` secret in Google Cloud
-Secret Manager, project `brightpearl-mcp-server`).
+A browser window opens for Google sign-in (if it doesn't, run `/mcp` inside
+Claude Code and choose "authenticate").
 
 **Claude Desktop / claude.ai:** Settings → Connectors → Add custom connector →
-URL above, with the same Authorization header.
+paste the URL above (no headers needed) → Connect → sign in with your work
+Google account.
 
 ## What you can ask
 
@@ -50,7 +53,9 @@ Claude can also write arbitrary read-only SQL against the warehouse
 
 - The server is **read-only** — nothing can write back to Brightpearl or
   modify the warehouse through Claude.
-- Every tool call is logged to the `mcp_audit` table (tool, arguments, time).
-  The bearer token is shared, so entries are not attributed to individuals yet.
+- Every tool call is logged to the `mcp_audit` table (tool, arguments, time,
+  and the signed-in user's email).
+- Access requires an @eastcoastfabrics.com Google account (enforced both by
+  the OAuth consent screen and server-side).
 - Live API lookups share Brightpearl's 200 requests/min budget with
   ShipStation and the website integration — they're throttled automatically.
