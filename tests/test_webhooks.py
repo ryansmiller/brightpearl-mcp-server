@@ -1,3 +1,7 @@
+import asyncio
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -74,6 +78,16 @@ def test_process_endpoint_runs_processor(app):
     fake.process.assert_awaited_once_with("order", [1, 2])
 
 
+def test_process_rejects_shared_token_in_production(app, monkeypatch):
+    """With TASKS_QUEUE set (production), /process is OIDC-only: the shared
+    token leaks into request logs via /webhook query strings, so it must not
+    open this endpoint too."""
+    client, _ = app
+    monkeypatch.setenv("TASKS_QUEUE", "projects/p/locations/l/queues/q")
+    resp = client.post("/process?token=sekret", json={"resource": "order", "ids": [1]})
+    assert resp.status_code == 403
+
+
 def test_process_endpoint_500_triggers_task_retry(app):
     client, fake = app
     fake.process.side_effect = RuntimeError("BigQuery down")
@@ -94,6 +108,48 @@ def test_webhook_bad_json_is_400(app):
 def test_health_is_open(app):
     client, _ = app
     assert client.get("/health").status_code == 200
+
+
+def test_tick_skips_concurrent_run_of_same_tier(app, monkeypatch):
+    """Cloud Scheduler fires /tick/{tier} on a blind cron regardless of
+    whether the previous run finished. A second overlapping call must skip
+    rather than pile a duplicate full scan onto the shared rate budget."""
+    client, fake = app
+    fake.pipeline.sync = AsyncMock(return_value=0)
+    release = threading.Event()
+
+    class SlowSearcher:
+        def __init__(self, *a, **k):
+            pass
+
+        async def sync(self, name, **kwargs):
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+            return 0
+
+    monkeypatch.setattr(webhooks, "SearchDumpSyncer", SlowSearcher)
+    monkeypatch.setattr(
+        webhooks, "ReferenceSyncer",
+        lambda *a, **k: MagicMock(sync=AsyncMock(return_value=0)),
+    )
+    monkeypatch.setattr(
+        webhooks, "DerivedSyncer",
+        lambda *a, **k: MagicMock(
+            sync_prices=AsyncMock(return_value=0),
+            sync_availability=AsyncMock(return_value=0),
+            sync_suppliers=AsyncMock(return_value=0),
+        ),
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.post, "/tick/warm?token=sekret")
+        time.sleep(0.2)  # let the first request enter the lock and start stalling
+        second_resp = pool.submit(client.post, "/tick/warm?token=sekret").result(timeout=5)
+        assert second_resp.json() == {"tier": "warm", "skipped": "already running"}
+        release.set()
+        first_resp = first.result(timeout=5)
+        assert first_resp.status_code == 200
+        assert first_resp.json()["tier"] == "warm"
 
 
 def test_alert_check_flags_stale_and_missing(app, monkeypatch):

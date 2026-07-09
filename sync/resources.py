@@ -44,12 +44,14 @@ SEARCH_DUMPS: dict[str, dict] = {
         "incremental": ("updated", "updatedOn"),
         "tier": "hot",
     },
-    # picked/packed/shipped flags mutate and there is no updatedOn column →
-    # full reload (~270 requests/run)
+    # picked/packed/printed flags mutate pre-ship, but shippedOn (set once,
+    # when the note ships) is what our reporting actually needs — treat it
+    # as the updatedOn watermark instead of a full reload every warm tick
+    # (was ~270 requests/run; see the 2026-07-09 staleness incident).
     "goods_out_notes": {
         "search": ("warehouse-service", "goods-note/goods-out"),
         "key": "goodsOutNoteId",
-        "incremental": ("full", None),
+        "incremental": ("updated", "shippedOn"),
         "tier": "warm",
     },
     "companies": {
@@ -61,26 +63,26 @@ SEARCH_DUMPS: dict[str, dict] = {
     "brands": {
         "search": ("product-service", "brand"),
         "key": "brandId",
-        "incremental": ("full", None),
-        "tier": "cold",
+        "incremental": ("updated", "updatedOn"),
+        "tier": "warm",
     },
     "collections": {
         "search": ("product-service", "collection"),
         "key": "collectionId",
-        "incremental": ("full", None),
-        "tier": "cold",
+        "incremental": ("updated", "updatedOn"),
+        "tier": "warm",
     },
     "product_types": {
         "search": ("product-service", "product-type"),
         "key": "id",
-        "incremental": ("full", None),
-        "tier": "cold",
+        "incremental": ("updated", "updatedOn"),
+        "tier": "warm",
     },
     "seasons": {
         "search": ("product-service", "season"),
         "key": "id",
-        "incremental": ("full", None),
-        "tier": "cold",
+        "incremental": ("updated", "updatedOn"),
+        "tier": "warm",
     },
     "contact_groups": {
         "search": ("contact-service", "contact-group"),
@@ -121,8 +123,8 @@ SEARCH_DUMPS: dict[str, dict] = {
     "categories": {
         "search": ("product-service", "brightpearl-category"),
         "key": "id",
-        "incremental": ("full", None),
-        "tier": "cold",
+        "incremental": ("updated", "updatedOn"),
+        "tier": "warm",
     },
     "warehouse_locations": {
         "search": ("warehouse-service", "location"),
@@ -133,14 +135,14 @@ SEARCH_DUMPS: dict[str, dict] = {
     "product_options": {
         "search": ("product-service", "option"),
         "key": "id",
-        "incremental": ("full", None),
-        "tier": "cold",
+        "incremental": ("updated", "updatedOn"),
+        "tier": "warm",
     },
     "product_option_values": {
         "search": ("product-service", "option-value"),
         "key": "id",
-        "incremental": ("full", None),
-        "tier": "cold",
+        "incremental": ("updated", "updatedOn"),
+        "tier": "warm",
     },
     "contact_group_members": {
         "search": ("contact-service", "contact-group-member"),

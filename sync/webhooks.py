@@ -70,19 +70,24 @@ RESOURCE_MAP = {
 # incremental goods_movements dump instead of a detail fetch.
 MOVEMENT_TRIGGERS = {"goods-out-note", "goods-in-note"}
 
-# Sweep tiers for /tick — sweeps for detail resources, dumps for the rest
+def _dumps_for_tier(tier: str) -> list[str]:
+    return [t for t in SEARCH_DUMPS if SEARCH_DUMPS[t]["tier"] == tier]
+
+
+# Sweep tiers for /tick — sweeps for detail resources, dumps for the rest.
+# Dumps are derived from each resource's "tier" in resources.py so moving a
+# resource between tiers (as with goods_out_notes/brands/etc, 2026-07-09)
+# doesn't also require updating a second, easy-to-forget list here.
 TIERS: dict[str, dict] = {
-    "hot": {"sweeps": ["orders"], "dumps": ["goods_movements"], "derived": []},
+    "hot": {"sweeps": ["orders"], "dumps": _dumps_for_tier("hot"), "derived": []},
     "warm": {
         "sweeps": ["contacts"],
-        "dumps": ["journal_rows", "customer_payments", "supplier_payments",
-                  "goods_out_notes", "companies"],
+        "dumps": _dumps_for_tier("warm"),
         "derived": ["availability"],
     },
     "cold": {
         "sweeps": ["products"],
-        "dumps": [t for t in SEARCH_DUMPS if SEARCH_DUMPS[t]["tier"] == "cold"]
-                 + list(REFERENCE_GETS),
+        "dumps": _dumps_for_tier("cold") + list(REFERENCE_GETS),
         "derived": ["prices", "suppliers"],
     },
 }
@@ -124,6 +129,16 @@ class Processor:
 
 processor: Processor | None = None
 _tasks_client = None
+# Cloud Scheduler fires /tick/{tier} on a blind cron regardless of whether the
+# previous invocation finished. A tier whose dumps include a slow full-reload
+# (goods_out_notes: ~270 requests, no updatedOn to filter on) can occasionally
+# overrun its interval; without this guard the next tick piles a second
+# concurrent full scan onto the same shared 200 req/min budget, which slows
+# both down, causing the next tick to overlap too — an unbounded pile-up that
+# starves the rate limiter and starves sync_state updates for every dump
+# after the slow one. One lock per tier turns an overlapping tick into a
+# no-op instead of a pile-up.
+_tick_locks: dict[str, asyncio.Lock] = {}
 
 
 def _create_task(queue: str, payload: dict) -> None:
@@ -219,8 +234,18 @@ async def webhook(request: Request) -> JSONResponse:
 
 
 async def process_task(request: Request) -> JSONResponse:
-    """Cloud Tasks callback. Non-2xx → the task retries with backoff."""
-    if not (_check_oidc(request) or _check_token(request)):
+    """Cloud Tasks callback. Non-2xx → the task retries with backoff.
+
+    In production (TASKS_QUEUE set) only Cloud Tasks' OIDC identity is
+    accepted: the shared token appears in request logs via /webhook query
+    strings, so it must not also open this endpoint. The token fallback
+    exists only for local dev, where there's no Cloud Tasks to sign calls.
+    """
+    if os.environ.get("TASKS_QUEUE"):
+        authorized = _check_oidc(request)
+    else:
+        authorized = _check_oidc(request) or _check_token(request)
+    if not authorized:
         return JSONResponse({"error": "unauthorized"}, status_code=403)
     try:
         body = await request.json()
@@ -242,32 +267,37 @@ async def tick(request: Request) -> JSONResponse:
     tier = request.path_params["tier"]
     if tier not in TIERS:
         return JSONResponse({"error": f"unknown tier {tier}"}, status_code=400)
-    spec = TIERS[tier]
-    results: dict[str, int] = {}
-    searcher = SearchDumpSyncer(processor.bp, processor.bq)
-    reference = ReferenceSyncer(processor.bp, processor.bq)
-    derived = DerivedSyncer(processor.bp, processor.bq)
-    for name in spec["sweeps"]:
-        results[name] = await processor.pipeline.sync(name, incremental=True)
-    for name in spec["dumps"]:
-        if name in REFERENCE_GETS:
-            results[name] = await reference.sync(name)
-        else:
-            results[name] = await searcher.sync(name)
-    derived_fns = {
-        "prices": derived.sync_prices,
-        "availability": derived.sync_availability,
-        "suppliers": derived.sync_suppliers,
-    }
-    for kind in spec["derived"]:
-        results[f"derived_{kind}"] = await derived_fns[kind]()
-    if tier == "cold":
-        for resource in ("orders", "products", "contacts"):
-            results[f"reconcile_{resource}"] = (
-                await processor.pipeline.reconcile_deletions(resource)
-            )
-    logger.info("tick %s: %s", tier, results)
-    return JSONResponse({"tier": tier, "results": results})
+    lock = _tick_locks.setdefault(tier, asyncio.Lock())
+    if lock.locked():
+        logger.warning("tick %s: previous run still in progress, skipping", tier)
+        return JSONResponse({"tier": tier, "skipped": "already running"})
+    async with lock:
+        spec = TIERS[tier]
+        results: dict[str, int] = {}
+        searcher = SearchDumpSyncer(processor.bp, processor.bq)
+        reference = ReferenceSyncer(processor.bp, processor.bq)
+        derived = DerivedSyncer(processor.bp, processor.bq)
+        for name in spec["sweeps"]:
+            results[name] = await processor.pipeline.sync(name, incremental=True)
+        for name in spec["dumps"]:
+            if name in REFERENCE_GETS:
+                results[name] = await reference.sync(name)
+            else:
+                results[name] = await searcher.sync(name)
+        derived_fns = {
+            "prices": derived.sync_prices,
+            "availability": derived.sync_availability,
+            "suppliers": derived.sync_suppliers,
+        }
+        for kind in spec["derived"]:
+            results[f"derived_{kind}"] = await derived_fns[kind]()
+        if tier == "cold":
+            for resource in ("orders", "products", "contacts"):
+                results[f"reconcile_{resource}"] = (
+                    await processor.pipeline.reconcile_deletions(resource)
+                )
+        logger.info("tick %s: %s", tier, results)
+        return JSONResponse({"tier": tier, "results": results})
 
 
 async def healthz(request: Request) -> PlainTextResponse:
@@ -326,6 +356,7 @@ async def alert_check(request: Request) -> JSONResponse:
 def create_app() -> Starlette:
     global processor
     processor = Processor()
+    _tick_locks.clear()
     return Starlette(routes=[
         Route("/webhook", webhook, methods=["POST"]),
         Route("/process", process_task, methods=["POST"]),

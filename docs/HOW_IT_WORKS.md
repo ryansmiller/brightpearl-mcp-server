@@ -228,10 +228,13 @@ field picks one of three update strategies:
   than X" — but Brightpearl rejects range syntax on INTEGER/IDSET columns,
   and a rejected filter used to silently degrade into a 2,900-request full
   scan every 30 minutes.)
-- `("updated", col)` — resources with a filterable `updatedOn`
-  (goods movements): timestamp watermark, like the detail pipeline.
-- `("full", None)` — mutable data with no update timestamp (goods-out notes:
-  picked/packed/shipped flags change silently) or tiny tables: reload
+- `("updated", col)` — resources with a filterable update timestamp: a plain
+  `updatedOn` (goods movements), or a domain field that serves the same
+  purpose (goods-out notes: `shippedOn` is set once, when the note ships,
+  and that's the transition our reporting actually cares about — pre-ship
+  picked/packed/printed churn isn't tracked in near-real-time). Timestamp
+  watermark, like the detail pipeline.
+- `("full", None)` — no usable timestamp at all, or tiny tables: reload
   everything each run. Correctness beats cleverness at these sizes.
 
 If a filter is rejected by the API, the syncer logs it and falls back to a
