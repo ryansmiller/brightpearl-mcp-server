@@ -140,7 +140,7 @@ SEARCH_DUMPS: dict[str, dict] = {
     },
     "product_option_values": {
         "search": ("product-service", "option-value"),
-        "key": "id",
+        "key": "optionValueId",
         "incremental": ("updated", "updatedOn"),
         "tier": "warm",
     },

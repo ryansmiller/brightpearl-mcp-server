@@ -152,6 +152,47 @@ def test_tick_skips_concurrent_run_of_same_tier(app, monkeypatch):
         assert first_resp.json()["tier"] == "warm"
 
 
+def test_tick_isolates_resource_failure(app, monkeypatch):
+    """A broken resource (bad MERGE key, rejected filter, etc.) must not
+    starve the dumps/derived steps scheduled after it in the same tick —
+    the 2026-07-09 product_option_values incident: a bad `key` config threw
+    on every warm tick and silently blocked derived_availability, which runs
+    last, for hours with no error surfaced in get_data_freshness."""
+    client, fake = app
+    fake.pipeline.sync = AsyncMock(return_value=0)
+
+    class FlakySearcher:
+        def __init__(self, *a, **k):
+            pass
+
+        async def sync(self, name, **kwargs):
+            if name == "supplier_payments":
+                raise RuntimeError("Unrecognized name: id")
+            return 1
+
+    monkeypatch.setattr(webhooks, "SearchDumpSyncer", FlakySearcher)
+    monkeypatch.setattr(
+        webhooks, "ReferenceSyncer",
+        lambda *a, **k: MagicMock(sync=AsyncMock(return_value=0)),
+    )
+    availability = AsyncMock(return_value=0)
+    monkeypatch.setattr(
+        webhooks, "DerivedSyncer",
+        lambda *a, **k: MagicMock(
+            sync_prices=AsyncMock(return_value=0),
+            sync_availability=availability,
+            sync_suppliers=AsyncMock(return_value=0),
+        ),
+    )
+
+    resp = client.post("/tick/warm?token=sekret")
+    assert resp.status_code == 200
+    results = resp.json()["results"]
+    assert results["supplier_payments"] == {"error": "Unrecognized name: id"}
+    assert results["companies"] == 1  # a dump scheduled after the failure still ran
+    availability.assert_awaited_once()  # the derived step still ran
+
+
 def test_alert_check_flags_stale_and_missing(app, monkeypatch):
     client, fake = app
     fake.bq.query.return_value = [

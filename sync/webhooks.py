@@ -261,6 +261,18 @@ async def process_task(request: Request) -> JSONResponse:
     return JSONResponse({"processed": n})
 
 
+async def _safe(name: str, coro) -> object:
+    """Run one tick resource in isolation so a bad config or a flaky call on
+    it (e.g. the 2026-07-09 product_option_values MERGE-key bug) can't also
+    starve every resource scheduled after it in the same tick — including
+    the derived steps, which run last."""
+    try:
+        return await coro
+    except Exception as e:
+        logger.exception("tick: %s failed, continuing with remaining resources", name)
+        return {"error": str(e)}
+
+
 async def tick(request: Request) -> JSONResponse:
     if not _check_token(request):
         return JSONResponse({"error": "bad token"}, status_code=403)
@@ -273,28 +285,28 @@ async def tick(request: Request) -> JSONResponse:
         return JSONResponse({"tier": tier, "skipped": "already running"})
     async with lock:
         spec = TIERS[tier]
-        results: dict[str, int] = {}
+        results: dict[str, object] = {}
         searcher = SearchDumpSyncer(processor.bp, processor.bq)
         reference = ReferenceSyncer(processor.bp, processor.bq)
         derived = DerivedSyncer(processor.bp, processor.bq)
         for name in spec["sweeps"]:
-            results[name] = await processor.pipeline.sync(name, incremental=True)
+            results[name] = await _safe(name, processor.pipeline.sync(name, incremental=True))
         for name in spec["dumps"]:
             if name in REFERENCE_GETS:
-                results[name] = await reference.sync(name)
+                results[name] = await _safe(name, reference.sync(name))
             else:
-                results[name] = await searcher.sync(name)
+                results[name] = await _safe(name, searcher.sync(name))
         derived_fns = {
             "prices": derived.sync_prices,
             "availability": derived.sync_availability,
             "suppliers": derived.sync_suppliers,
         }
         for kind in spec["derived"]:
-            results[f"derived_{kind}"] = await derived_fns[kind]()
+            results[f"derived_{kind}"] = await _safe(f"derived_{kind}", derived_fns[kind]())
         if tier == "cold":
             for resource in ("orders", "products", "contacts"):
-                results[f"reconcile_{resource}"] = (
-                    await processor.pipeline.reconcile_deletions(resource)
+                results[f"reconcile_{resource}"] = await _safe(
+                    f"reconcile_{resource}", processor.pipeline.reconcile_deletions(resource)
                 )
         logger.info("tick %s: %s", tier, results)
         return JSONResponse({"tier": tier, "results": results})
