@@ -159,6 +159,27 @@ VIEWS: dict[str, str] = {
         LEFT JOIN `{ds}.nominal_codes` n ON n.code = j.nominal_code
         GROUP BY 1, 2, 3, 4
     """,
+    # One row per product × option × value. The variant assignments already
+    # live in each product's raw_payload.variations (synced on every product
+    # update), and each entry carries its own optionValue name — so this view
+    # is self-contained and needs no join to the product_option_values
+    # catalog. Lets "which products are Graphite" / "all Color values in use"
+    # be a single-table scan. status is kept as a column (not filtered) so
+    # ARCHIVED products stay queryable; only deleted rows are excluded.
+    "product_variations": """
+        SELECT
+          p.product_id,
+          p.sku,
+          p.name AS product_name,
+          p.status,
+          CAST(JSON_VALUE(v, '$.optionId') AS INT64) AS option_id,
+          JSON_VALUE(v, '$.optionName') AS option_name,
+          CAST(JSON_VALUE(v, '$.optionValueId') AS INT64) AS option_value_id,
+          JSON_VALUE(v, '$.optionValue') AS option_value
+        FROM `{ds}.products` p,
+        UNNEST(JSON_QUERY_ARRAY(p.raw_payload, '$.variations')) AS v
+        WHERE NOT IFNULL(p.is_deleted, FALSE)
+    """,
 }
 
 

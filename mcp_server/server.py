@@ -63,7 +63,7 @@ mcp = FastMCP(
     instructions=(
         "East Coast Fabrics' Brightpearl ERP data. Prefer the semantic views "
         "(sales_flat, inventory_position, po_pipeline, customer_summary, "
-        "monthly_financials) via run_bigquery_sql for anything the dedicated "
+        "monthly_financials, product_variations) via run_bigquery_sql for anything the dedicated "
         "tools don't cover. Sales, revenue, and customer questions MUST be "
         "answered from sales_flat or customer_summary, never the raw orders "
         "table: the views exclude quotes, drafts, pending, and cancelled "
