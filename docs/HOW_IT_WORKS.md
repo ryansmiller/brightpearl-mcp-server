@@ -205,6 +205,43 @@ All writes go through a **staging + MERGE** pattern, which is how you do an
 `sweep` is the incremental flavor. Same code path, different filter — one
 thing to debug, not two.
 
+### How deletions get here
+
+Sweeps only ever ask "what changed since X?", and a record deleted in
+Brightpearl simply stops coming back — it never shows up as a change. So
+deletions need their own path, and there are two of them.
+
+**Soft delete, for `orders`/`products`/`contacts`.** We don't remove the row;
+we flip `is_deleted = TRUE` (think tombstone, not `splice()`). Two things set
+that flag:
+
+- the `destroyed` webhook → `bq.mark_deleted()`. Only `product.destroyed` is
+  subscribed — `contact.*` events aren't offered on this account, so contacts
+  have no real-time path.
+- `pipeline.reconcile_deletions()`, in the **cold tier, daily at 07:00 UTC**.
+  It lists every ID the API still has, diffs against the live IDs in BigQuery,
+  and tombstones the difference. It refuses to act if the API returns nothing,
+  or if more than 20% of rows would vanish — a silently-failed search must
+  never trigger a mass delete.
+
+So a contact deleted in the Brightpearl UI disappears from BigQuery within
+about a day, not instantly.
+
+The flag is only half the job: **every view over a soft-deletable table must
+filter it**, or the tombstoned rows keep getting served. `customer_summary`
+shipped without that filter and served deleted contacts through
+`search_customers`; `test_views_exclude_soft_deleted_rows` now guards all of
+them. Note that `is_deleted` is `NULL` on most rows, hence
+`NOT IFNULL(x.is_deleted, FALSE)` rather than `NOT x.is_deleted`.
+
+Re-upserting resets `is_deleted` to `FALSE`, which is correct: the record only
+gets re-upserted if the API returned it, meaning it exists again.
+
+**Truncate-and-reload, for everything else.** Any `("full", None)` resource in
+`resources.py` (`companies`, the reference tables) is wiped and re-downloaded
+each tick, so deletions propagate for free — no flag, no sweep. That's why
+`companies` has no `is_deleted` column.
+
 ### resources.py + dynamic.py — the config-driven "everything else"
 
 Hand-writing 40 schemas would be miserable, so the rest of the tables are

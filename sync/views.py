@@ -142,6 +142,7 @@ VIEWS: dict[str, str] = {
         LEFT JOIN `{ds}.orders` o
           ON o.customer_contact_id = c.contact_id AND o.order_type_code = 'SO'
           AND NOT IFNULL(o.is_deleted, FALSE) AND {reportable_so}
+        WHERE NOT IFNULL(c.is_deleted, FALSE)
         GROUP BY 1, 2, 3, 4, 5, 6, 7
     """,
     # Monthly P&L-style rollup from journal lines (debits/credits are strings)

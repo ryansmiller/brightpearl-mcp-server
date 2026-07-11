@@ -18,6 +18,21 @@ def test_sales_views_exclude_non_reportable_orders():
         assert "{reportable_so}" in VIEWS[name], f"{name} lost the pending/cancelled filter"
 
 
+def test_views_exclude_soft_deleted_rows():
+    # orders/products/contacts are soft-deleted (is_deleted flipped by the
+    # destroyed webhook or the cold-tier reconcile sweep), so a view that reads
+    # one without guarding the flag keeps serving records deleted in Brightpearl.
+    # customer_summary shipped without the contacts guard; this catches a repeat.
+    soft_delete_tables = {"orders": "o", "products": "p", "contacts": "c"}
+    for name, sql in VIEWS.items():
+        for table, alias in soft_delete_tables.items():
+            if f"{{ds}}.{table}` {alias}" not in sql:
+                continue
+            assert f"NOT IFNULL({alias}.is_deleted, FALSE)" in sql, (
+                f"view {name} reads {table} without filtering soft-deleted rows"
+            )
+
+
 def test_po_pipeline_excludes_draft_orders():
     assert "{reportable_po}" in VIEWS["po_pipeline"], "po_pipeline lost the draft filter"
     assert "'draft'" in REPORTABLE_PO
