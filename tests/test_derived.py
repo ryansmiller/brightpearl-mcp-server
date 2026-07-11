@@ -34,7 +34,7 @@ class FakeBQ:
     def query(self, sql):
         return self.product_rows
 
-    def truncate_load(self, name, rows, schema):
+    def truncate_load(self, name, rows, schema, cluster_fields=None):
         self.truncates.append((name, list(rows)))
         return len(rows)
 

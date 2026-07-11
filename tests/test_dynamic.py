@@ -53,14 +53,14 @@ class FakeBQ:
             return []
         return [{"watermark_id": self.watermark_id, "watermark_updated_on": None}]
 
-    def ensure_table(self, name, schema):
+    def ensure_table(self, name, schema, cluster_fields=None):
         pass
 
     def upsert(self, name, rows, schema=None, key=None):
         self.upserts.append((name, list(rows)))
         return len(rows)
 
-    def truncate_load(self, name, rows, schema):
+    def truncate_load(self, name, rows, schema, cluster_fields=None):
         self.upserts.append((name, list(rows)))
         return len(rows)
 

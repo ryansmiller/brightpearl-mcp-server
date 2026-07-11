@@ -202,7 +202,9 @@ class DerivedSyncer:
                             "when_upserted": now,
                         }
                     )
-        self.bq.ensure_table("product_availability", AVAILABILITY_SCHEMA)
+        self.bq.ensure_table(
+            "product_availability", AVAILABILITY_SCHEMA, cluster_fields=["product_id"]
+        )
         return self.bq.replace_children(
             "product_availability", "product_id", product_ids, rows,
             schema=AVAILABILITY_SCHEMA,
@@ -228,7 +230,9 @@ class DerivedSyncer:
                             "when_upserted": now,
                         }
                     )
-        n = self.bq.truncate_load("product_availability", rows, AVAILABILITY_SCHEMA)
+        n = self.bq.truncate_load(
+            "product_availability", rows, AVAILABILITY_SCHEMA, cluster_fields=["product_id"]
+        )
         self._record("product_availability", n)
         logger.info("product_availability: %d rows", n)
         return n

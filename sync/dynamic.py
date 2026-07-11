@@ -145,7 +145,9 @@ class SearchDumpSyncer:
                 raise
             if schema is None:
                 schema = self._schema_for(page.columns)
-                self.bq.ensure_table(table, schema)
+                # Cluster on the MERGE key so incremental upserts don't
+                # full-scan the target table on every tick.
+                self.bq.ensure_table(table, schema, cluster_fields=[key])
             watermark_col = snake(col) if col else None
             caught_up = False
             for api_row in page.results:

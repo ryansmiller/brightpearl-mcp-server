@@ -67,7 +67,15 @@ class BigQueryWriter:
 
     def ensure_tables(self) -> None:
         for name, spec in TABLES.items():
+            # Cluster on whatever column MERGE/DELETE actually filters by —
+            # the parent key for child-of tables (order_rows' DELETE filters
+            # on order_id, not its own order_row_id), else the MERGE key.
+            # Without this every upsert/delete full-scans the target table
+            # (BigQuery on-demand pricing bills by bytes scanned, not rows
+            # touched) — see the 2026-07 billing investigation.
+            cluster_field = spec["child_of"][1] if "child_of" in spec else spec["key_field"]
             table = bigquery.Table(self._table_ref(name), schema=spec["schema"])
+            table.clustering_fields = [cluster_field]
             self.client.create_table(table, exists_ok=True)
         # Additive migrations for pre-existing tables
         self.client.query_and_wait(
@@ -98,8 +106,15 @@ class BigQueryWriter:
         )
         return len(ids)
 
-    def ensure_table(self, name: str, schema: list[bigquery.SchemaField]) -> None:
+    def ensure_table(
+        self,
+        name: str,
+        schema: list[bigquery.SchemaField],
+        cluster_fields: list[str] | None = None,
+    ) -> None:
         table = bigquery.Table(self._table_ref(name), schema=schema)
+        if cluster_fields:
+            table.clustering_fields = cluster_fields
         self.client.create_table(table, exists_ok=True)
 
     def _load_staging(
@@ -126,10 +141,14 @@ class BigQueryWriter:
         self.client.delete_table(table_ref, not_found_ok=True)
 
     def truncate_load(
-        self, name: str, rows: list[dict[str, Any]], schema: list[bigquery.SchemaField]
+        self,
+        name: str,
+        rows: list[dict[str, Any]],
+        schema: list[bigquery.SchemaField],
+        cluster_fields: list[str] | None = None,
     ) -> int:
         """Replace the whole table (small reference/mutable resources)."""
-        self.ensure_table(name, schema)
+        self.ensure_table(name, schema, cluster_fields)
         self._load_json(
             rows,
             self._table_ref(name),
