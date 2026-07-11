@@ -45,13 +45,14 @@ logger = logging.getLogger(__name__)
 # contacts rely on the warm sweep.
 WEBHOOK_EVENTS = [
     # order.modified verified firing in production logs; the order-status
-    # sub-event registered too (per Ryan) in case some status changes only
-    # emit the specific code. Duplicates are harmless (idempotent upserts).
+    # sub-event registered too in case some status changes only emit the
+    # specific code. Duplicates are harmless (idempotent upserts).
     "order.modified",
     "order.modified.order-status",
     # Only fires for orders created via the newer sales-order POST endpoint —
-    # UI-created orders do NOT trigger it (per Ryan/docs). Kept as free
-    # insurance for future API integrations; order.modified covers UI orders.
+    # UI-created orders do NOT trigger it (confirmed against the docs and the
+    # account owner). Kept as free insurance for future API integrations;
+    # order.modified covers UI orders.
     "sales-order.created",
     "product.created", "product.modified", "product.destroyed",
     # Stock-level change event (three-part code discovered from the account's

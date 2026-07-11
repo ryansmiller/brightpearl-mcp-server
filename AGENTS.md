@@ -4,7 +4,7 @@ Natural-language access to East Coast Fabrics' Brightpearl ERP data: a sync pipe
 
 **Roadmap, phase status, and architecture details live in [GAMEPLAN.md](GAMEPLAN.md).** Update its Status log when a phase advances.
 
-**[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) is a code tour written for Ryan (JavaScript background).** Keep it current when modules change shape — it's how the owner reads this codebase.
+**[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) is a code tour written for the owner (JavaScript background).** Keep it current when modules change shape — it's how the owner reads this codebase.
 
 ## Layout
 

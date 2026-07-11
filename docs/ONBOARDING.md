@@ -39,7 +39,7 @@ Claude can also write arbitrary read-only SQL against the warehouse
 ## If something looks wrong
 
 - **Stale data?** Ask Claude to run `get_data_freshness`. If a resource is
-  stale, an alert email has probably already gone to Ryan (automated check
+  stale, an alert email has probably already gone out (automated check
   every 15 minutes).
 - **Alert email received?** Check Cloud Run logs:
   `gcloud run services logs read sync-ingest --region us-east4 --limit 50`
