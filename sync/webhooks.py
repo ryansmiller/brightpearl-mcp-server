@@ -23,6 +23,8 @@ import hmac
 import json
 import logging
 import os
+import time
+from collections import defaultdict
 
 import uvicorn
 from starlette.applications import Starlette
@@ -142,28 +144,47 @@ _tasks_client = None
 _tick_locks: dict[str, asyncio.Lock] = {}
 
 
-def _create_task(queue: str, payload: dict) -> None:
+# Coalescing: a burst of single-id webhooks (each an order/product edit) would
+# otherwise become one Cloud Task → one fetch → one BigQuery upsert apiece, and
+# every upsert pays BigQuery's per-query floor. Instead we buffer ids per
+# resource in memory and schedule ONE delayed flush task per resource; ids that
+# land during the window fold into the same flush. max-instances=1 makes the
+# in-memory buffer authoritative. Durability: an instance restart loses at most
+# the sub-window of un-flushed ids, which the tiered polling sweeps reconcile —
+# the same safety net every webhook miss already relies on. Set the window to 0
+# to disable and enqueue one task per delivery (the pre-coalescing behavior).
+COALESCE_WINDOW = int(os.environ.get("WEBHOOK_COALESCE_WINDOW", "10"))
+_pending_ids: dict[str, set[int]] = defaultdict(set)
+_flush_scheduled: set[str] = set()
+_pending_lock = asyncio.Lock()
+
+
+def _create_task(queue: str, payload: dict, *, delay_seconds: int = 0) -> None:
     global _tasks_client
     from google.cloud import tasks_v2
 
     if _tasks_client is None:
         _tasks_client = tasks_v2.CloudTasksClient()
     service_url = os.environ["SERVICE_URL"]
-    _tasks_client.create_task(
-        parent=queue,
-        task={
-            "http_request": {
-                "http_method": tasks_v2.HttpMethod.POST,
-                "url": f"{service_url}/process",
-                "headers": {"Content-Type": "application/json"},
-                "body": json.dumps(payload).encode(),
-                "oidc_token": {
-                    "service_account_email": os.environ["SERVICE_ACCOUNT_EMAIL"],
-                    "audience": service_url,
-                },
-            }
-        },
-    )
+    task: dict = {
+        "http_request": {
+            "http_method": tasks_v2.HttpMethod.POST,
+            "url": f"{service_url}/process",
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps(payload).encode(),
+            "oidc_token": {
+                "service_account_email": os.environ["SERVICE_ACCOUNT_EMAIL"],
+                "audience": service_url,
+            },
+        }
+    }
+    if delay_seconds:
+        from google.protobuf import timestamp_pb2
+
+        ts = timestamp_pb2.Timestamp()
+        ts.FromNanoseconds((time.time_ns()) + delay_seconds * 1_000_000_000)
+        task["schedule_time"] = ts
+    _tasks_client.create_task(parent=queue, task=task)
 
 
 async def dispatch(resource: str, ids: list[int]) -> str:
@@ -172,8 +193,32 @@ async def dispatch(resource: str, ids: list[int]) -> str:
     if not queue:
         await processor.process(resource, ids)
         return "inline"
-    await asyncio.to_thread(_create_task, queue, {"resource": resource, "ids": ids})
-    return "queued"
+    if COALESCE_WINDOW <= 0:
+        await asyncio.to_thread(_create_task, queue, {"resource": resource, "ids": ids})
+        return "queued"
+    async with _pending_lock:
+        _pending_ids[resource].update(ids)
+        need_task = resource not in _flush_scheduled
+        if need_task:
+            _flush_scheduled.add(resource)
+    if need_task:
+        await asyncio.to_thread(
+            _create_task, queue, {"flush": resource}, delay_seconds=COALESCE_WINDOW
+        )
+    return "coalesced"
+
+
+async def _drain(resource: str) -> int:
+    """Flush a resource's buffered ids as one processing pass.
+
+    Clearing the buffer and the scheduled-flag together (before processing)
+    means any webhook arriving afterward schedules a fresh flush rather than
+    dropping its id into an un-scheduled buffer.
+    """
+    async with _pending_lock:
+        ids = sorted(_pending_ids.pop(resource, set()))
+        _flush_scheduled.discard(resource)
+    return await processor.process(resource, ids)
 
 
 def _check_token(request: Request) -> bool:
@@ -252,10 +297,13 @@ async def process_task(request: Request) -> JSONResponse:
         body = await request.json()
     except json.JSONDecodeError:
         return JSONResponse({"error": "bad json"}, status_code=400)
-    resource = str(body.get("resource", ""))
+    # A coalesced flush task carries only {"flush": resource} and drains the
+    # in-memory buffer; a direct task (coalescing disabled) carries ids.
+    flush = str(body.get("flush", ""))
+    resource = flush or str(body.get("resource", ""))
     ids = [int(x) for x in body.get("ids", [])]
     try:
-        n = await processor.process(resource, ids)
+        n = await (_drain(resource) if flush else processor.process(resource, ids))
     except Exception:
         logger.exception("processing failed for %s %s; task will retry", resource, ids)
         return JSONResponse({"error": "processing failed"}, status_code=500)
@@ -309,6 +357,13 @@ async def tick(request: Request) -> JSONResponse:
                 results[f"reconcile_{resource}"] = await _safe(
                     f"reconcile_{resource}", processor.pipeline.reconcile_deletions(resource)
                 )
+        # One batched sync_state write per tick (also picks up records left by
+        # webhook-driven sweeps since the last tick) instead of one per resource.
+        try:
+            processor.bq.state.flush()
+        except Exception as e:
+            logger.exception("tick %s: sync_state flush failed", tier)
+            results["state_flush"] = {"error": str(e)}
         logger.info("tick %s: %s", tier, results)
         return JSONResponse({"tier": tier, "results": results})
 
@@ -370,6 +425,8 @@ def create_app() -> Starlette:
     global processor
     processor = Processor()
     _tick_locks.clear()
+    _pending_ids.clear()
+    _flush_scheduled.clear()
     return Starlette(routes=[
         Route("/webhook", webhook, methods=["POST"]),
         Route("/process", process_task, methods=["POST"]),

@@ -57,16 +57,13 @@ class DerivedSyncer:
 
     def _record(self, table: str, rows: int) -> None:
         """Mark the run in sync_state so freshness monitoring covers derived tables."""
-        self.bq.upsert(
-            "sync_state",
-            [{
-                "resource": table,
-                "watermark_id": None,
-                "watermark_updated_on": None,
-                "last_run_at": _now(),
-                "last_run_kind": "derived",
-                "last_run_rows": rows,
-            }],
+        self.bq.state.record(
+            table,
+            watermark_id=None,
+            watermark_updated_on=None,
+            last_run_at=_now(),
+            last_run_kind="derived",
+            last_run_rows=rows,
         )
 
     def _product_ids(self, where: str = "TRUE") -> list[int]:

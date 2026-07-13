@@ -91,13 +91,8 @@ class SearchDumpSyncer:
         return out
 
     def _watermarks(self, table: str) -> tuple[int | None, datetime | None]:
-        rows = self.bq.query(
-            f"SELECT watermark_id, watermark_updated_on "
-            f"FROM `{self.bq._table_ref('sync_state')}` WHERE resource = '{table}'"
-        )
-        if not rows:
-            return None, None
-        return rows[0]["watermark_id"], rows[0]["watermark_updated_on"]
+        row = self.bq.state.get(table)
+        return row.get("watermark_id"), row.get("watermark_updated_on")
 
     async def sync(self, table: str, *, full: bool = False) -> int:
         spec = SEARCH_DUMPS[table]
@@ -196,16 +191,13 @@ class SearchDumpSyncer:
         return total
 
     def _record(self, table, kind, rows, max_id, max_ts):
-        self.bq.upsert(
-            "sync_state",
-            [{
-                "resource": table,
-                "watermark_id": max_id,
-                "watermark_updated_on": max_ts.isoformat() if max_ts else None,
-                "last_run_at": datetime.now(timezone.utc).isoformat(),
-                "last_run_kind": kind,
-                "last_run_rows": rows,
-            }],
+        self.bq.state.record(
+            table,
+            watermark_id=max_id,
+            watermark_updated_on=max_ts,
+            last_run_at=datetime.now(timezone.utc),
+            last_run_kind=kind,
+            last_run_rows=rows,
         )
 
 
@@ -257,14 +249,8 @@ class ReferenceSyncer:
             if isinstance(item, dict)
         ]
         n = self.bq.truncate_load(table, rows, REFERENCE_SCHEMA)
-        self.bq.upsert(
-            "sync_state",
-            [{
-                "resource": table,
-                "last_run_at": now,
-                "last_run_kind": "reference",
-                "last_run_rows": n,
-            }],
+        self.bq.state.record(
+            table, last_run_at=now, last_run_kind="reference", last_run_rows=n
         )
         logger.info("%s: %d reference rows", table, n)
         return n

@@ -11,6 +11,7 @@ from google.api_core.exceptions import BadRequest, Conflict
 from google.cloud import bigquery
 
 from .schema import TABLES
+from .state import SyncStateStore
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +19,22 @@ logger = logging.getLogger(__name__)
 # table (parallel webhook tasks, scheduled ticks)
 _CONCURRENT_ATTEMPTS = 5
 
+# Max distinct keys inlined into a literal DELETE+INSERT upsert. Above this we
+# fall back to MERGE: the id list would bloat the SQL, and a batch that large
+# is a backfill/dump chunk whose full-scan MERGE cost amortizes over many rows.
+# Webhook batches and incremental sweeps sit far below this.
+_LITERAL_KEY_MAX = 2000
+
 
 class BigQueryWriter:
     def __init__(self, project: str | None = None, dataset: str | None = None):
         self.project = project or os.environ["GCP_PROJECT_ID"]
         self.dataset = dataset or os.environ.get("BQ_DATASET", "brightpearl")
         self.client = bigquery.Client(project=self.project)
+        # Cached, batch-flushed sync_state (see sync/state.py). Callers read
+        # watermarks with bq.state.get() and record runs with bq.state.record();
+        # tick()/CLI flush once per pass instead of one MERGE per resource.
+        self.state = SyncStateStore(self)
 
     def _load_json(self, rows: list[dict[str, Any]], target: str, job_config) -> None:
         """load_table_from_json with a fresh job id on 409 Conflict.
@@ -163,11 +174,20 @@ class BigQueryWriter:
         schema: list[bigquery.SchemaField] | None = None,
         key: str | None = None,
     ) -> int:
-        """MERGE rows into the target table keyed on the table's key field.
+        """Upsert rows into the target table keyed on the table's key field.
 
         Staging is deduped on the key (keeping the freshest when_upserted) so
         overlapping pages or duplicate webhook deliveries stay idempotent.
         Schema/key come from TABLES unless supplied (dynamic search dumps).
+
+        Small integer-keyed batches take a literal-keyed DELETE + INSERT path;
+        everything else falls back to a staging-join MERGE. Both reach the same
+        end state (one freshest row per key), but only the literal `key IN (…)`
+        predicate lets BigQuery prune the clustered target — a MERGE whose match
+        keys come from the staging subquery full-scans the target every call
+        (orders: whole table vs a few blocks). See the 2026-07-13 billing
+        investigation. Large batches (backfills, 25k-row dump chunks) exceed the
+        inline-id cap and use MERGE, whose full scan amortizes over many rows.
         """
         if not rows:
             return 0
@@ -177,27 +197,39 @@ class BigQueryWriter:
         staging = self._load_staging(name, rows, schema)
         target = self._table_ref(name)
         cols = [f.name for f in schema]
-        updates = ", ".join(f"T.{c} = S.{c}" for c in cols if c != key)
         insert_cols = ", ".join(cols)
-        insert_vals = ", ".join(f"S.{c}" for c in cols)
-        sql = f"""
-        MERGE `{target}` T
-        USING (
-          SELECT * EXCEPT(_rn) FROM (
-            SELECT *, ROW_NUMBER() OVER (
-              PARTITION BY {key} ORDER BY when_upserted DESC
-            ) AS _rn
-            FROM `{staging}`
-          ) WHERE _rn = 1
-        ) S
-        ON T.{key} = S.{key}
-        WHEN MATCHED THEN UPDATE SET {updates}
-        WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})
-        """
-        if name == "sync_state":
-            sql = sql.replace("ORDER BY when_upserted DESC", "ORDER BY last_run_at DESC")
+        order_col = "last_run_at" if name == "sync_state" else "when_upserted"
+        deduped = (
+            f"SELECT * EXCEPT(_rn) FROM ("
+            f"SELECT *, ROW_NUMBER() OVER "
+            f"(PARTITION BY {key} ORDER BY {order_col} DESC) AS _rn "
+            f"FROM `{staging}`) WHERE _rn = 1"
+        )
+        ids = list(dict.fromkeys(r.get(key) for r in rows))
+        use_literal = 0 < len(ids) <= _LITERAL_KEY_MAX and all(
+            isinstance(v, int) and not isinstance(v, bool) for v in ids
+        )
         try:
-            self._dml(sql)
+            if use_literal:
+                # Idempotent on retry: DELETE+INSERT for these exact keys inside
+                # one transaction leaves one row per key regardless of prior state.
+                id_list = ", ".join(str(v) for v in ids)
+                self._dml(
+                    "BEGIN TRANSACTION;\n"
+                    f"DELETE FROM `{target}` WHERE {key} IN ({id_list});\n"
+                    f"INSERT INTO `{target}` ({insert_cols})\n"
+                    f"SELECT {insert_cols} FROM ({deduped});\n"
+                    "COMMIT TRANSACTION;"
+                )
+            else:
+                updates = ", ".join(f"T.{c} = S.{c}" for c in cols if c != key)
+                insert_vals = ", ".join(f"S.{c}" for c in cols)
+                self._dml(
+                    f"MERGE `{target}` T USING ({deduped}) S "
+                    f"ON T.{key} = S.{key} "
+                    f"WHEN MATCHED THEN UPDATE SET {updates} "
+                    f"WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})"
+                )
         finally:
             self._drop(staging)
         return len(rows)

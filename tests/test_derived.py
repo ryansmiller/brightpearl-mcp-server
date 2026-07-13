@@ -4,6 +4,7 @@ import pytest
 
 from brightpearl_client import BrightpearlError
 from sync.derived import DerivedSyncer
+from sync.state import SyncStateStore
 
 
 class FakeBP:
@@ -27,11 +28,16 @@ class FakeBQ:
         self.product_rows = product_rows
         self.truncates: list[tuple[str, list[dict]]] = []
         self.upserts: list[tuple[str, list[dict]]] = []
+        self.state = SyncStateStore(self)  # exercises the real cache/batch logic
 
     def _table_ref(self, name):
         return f"p.d.{name}"
 
     def query(self, sql):
+        # the state store's initial load also lands here; it expects
+        # sync_state-shaped rows, so give it an empty table
+        if "sync_state" in sql:
+            return []
         return self.product_rows
 
     def truncate_load(self, name, rows, schema, cluster_fields=None):
@@ -59,11 +65,9 @@ async def test_suppliers_loads_rows_and_records_sync_state():
     assert table == "product_suppliers"
     flags = {(r["product_id"], r["supplier_contact_id"]): r["is_primary"] for r in rows}
     assert flags == {(1, 10): True, (1, 20): False, (2, 30): False}
-    state_table, state_rows = bq.upserts[0]
-    assert state_table == "sync_state"
-    assert state_rows[0]["resource"] == "product_suppliers"
-    assert state_rows[0]["last_run_kind"] == "derived"
-    assert state_rows[0]["last_run_rows"] == 3
+    state = bq.state.get("product_suppliers")
+    assert state["last_run_kind"] == "derived"
+    assert state["last_run_rows"] == 3
 
 
 async def test_suppliers_transient_error_aborts_before_truncate():

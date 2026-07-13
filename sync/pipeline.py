@@ -52,27 +52,17 @@ class SyncPipeline:
         self.bq = bq
 
     def get_watermark(self, resource: str) -> datetime | None:
-        rows = self.bq.query(
-            f"SELECT watermark_updated_on FROM `{self.bq._table_ref('sync_state')}` "
-            f"WHERE resource = '{resource}'"
-        )
-        return rows[0]["watermark_updated_on"] if rows else None
+        return self.bq.state.get(resource).get("watermark_updated_on")
 
     def _record_run(
         self, resource: str, kind: str, rows: int, watermark: datetime | None
     ) -> None:
-        now = datetime.now(timezone.utc)
-        self.bq.upsert(
-            "sync_state",
-            [
-                {
-                    "resource": resource,
-                    "watermark_updated_on": watermark.isoformat() if watermark else None,
-                    "last_run_at": now.isoformat(),
-                    "last_run_kind": kind,
-                    "last_run_rows": rows,
-                }
-            ],
+        self.bq.state.record(
+            resource,
+            watermark_updated_on=watermark,
+            last_run_at=datetime.now(timezone.utc),
+            last_run_kind=kind,
+            last_run_rows=rows,
         )
 
     async def _collect_ids(

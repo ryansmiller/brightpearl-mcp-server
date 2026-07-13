@@ -162,12 +162,29 @@ All writes go through a **staging + MERGE** pattern, which is how you do an
 
 1. `_load_staging()` bulk-loads rows into `_stg_<table>` (WRITE_TRUNCATE =
    replace staging entirely). Batch loads are free in BigQuery.
-2. `upsert()` runs a MERGE:
-   ```sql
-   MERGE target T USING (deduped staging) S ON T.key = S.key
-   WHEN MATCHED THEN UPDATE ...        -- row exists: update it
-   WHEN NOT MATCHED THEN INSERT ...    -- new row: insert it
-   ```
+2. `upsert()` writes rows two ways, both idempotent and reaching the same end
+   state (one freshest row per key):
+   - **Small integer-keyed batches** (webhook events, incremental sweeps) run a
+     literal `DELETE FROM target WHERE key IN (7, 8, 9)` followed by an
+     `INSERT ... SELECT` from the deduped staging, inside one transaction.
+   - **Everything else** (string keys, huge backfill/dump chunks) runs a MERGE:
+     ```sql
+     MERGE target T USING (deduped staging) S ON T.key = S.key
+     WHEN MATCHED THEN UPDATE ...        -- row exists: update it
+     WHEN NOT MATCHED THEN INSERT ...    -- new row: insert it
+     ```
+   Why two paths? The tables are **clustered on their key** (see the billing
+   note below), and BigQuery can only prune the clustered target when the key
+   appears as a literal predicate. A MERGE's join key comes from the staging
+   subquery, which BigQuery can't see at plan time, so the MERGE full-scans the
+   target on every call — cheap for a millions-row backfill, ruinous for a
+   one-order webhook firing thousands of times a day. The literal `key IN (…)`
+   DELETE prunes to the handful of blocks holding those keys (a
+   handful-of-rows update on `orders` went from scanning the whole table to
+   scanning almost nothing). The `_LITERAL_KEY_MAX` cap (2,000) routes
+   oversized batches back to MERGE so the inlined id list never bloats the
+   SQL.
+
    The "deduped staging" subquery keeps only the freshest copy of each key
    (`ROW_NUMBER() OVER (PARTITION BY key ORDER BY when_upserted DESC)`), so
    feeding the same record twice — overlapping sweeps, duplicate webhook
@@ -187,6 +204,28 @@ All writes go through a **staging + MERGE** pattern, which is how you do an
    BigQuery only lets one statement mutate a table at a time, and a webhook
    task can collide with a scheduled sweep hitting the same table. Retrying
    is safe precisely because of the idempotency above.
+
+### state.py — the sync_state cache
+
+BigQuery charges a ~10 MB minimum per query, even one that touches a 40-row
+table. Reading a watermark before every sweep and writing a bookkeeping row
+after every sweep was ~2,700 such queries a day — real money for a diary.
+`SyncStateStore` (attached as `bq.state`) fixes it the same way you'd fix
+chatty `localStorage` access in JS: keep a copy in memory, batch the writes.
+
+- `get(resource)` — loads the whole table once per process, then serves every
+  read from memory. Safe because the sync service runs with `max-instances=1`
+  (it must anyway, for the API rate budget), so nobody else is writing.
+- `record(resource, **fields)` — updates the memory copy immediately (so later
+  reads in the same run see the new watermark) and buffers the row.
+- `flush()` — writes all buffered rows as ONE upsert. Called at the end of
+  each `/tick` and when a CLI run exits.
+
+A crash between record and flush loses only bookkeeping, never data: the next
+sweep re-reads a slightly older watermark and re-ingests an overlap the
+idempotent upserts absorb. Staleness alerting reads the BigQuery table, so its
+view can lag by up to one tick (~5 min) — well inside the 30-minute-plus
+alert budgets.
 
 ### pipeline.py — detail-resource sync (orders/products/contacts)
 

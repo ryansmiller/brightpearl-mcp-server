@@ -48,47 +48,53 @@ async def run(args: argparse.Namespace) -> None:
         return
 
     bq.ensure_tables()
-    async with BrightpearlClient() as bp:
-        if args.command in ("backfill", "sweep"):
-            pipeline = SyncPipeline(bp, bq)
-            resources = list(RESOURCES) if args.resource == "all" else [args.resource]
-            for resource in resources:
-                n = await pipeline.sync(
-                    resource, incremental=(args.command == "sweep"), limit=args.limit
-                )
-                print(f"{resource}: {n} upserted")
-        elif args.command == "dump":
-            searcher = SearchDumpSyncer(bp, bq)
-            reference = ReferenceSyncer(bp, bq)
-            if args.table == "all":
-                tables = [*REFERENCE_GETS, *SEARCH_DUMPS]
-            elif args.table == "refs":
-                tables = list(REFERENCE_GETS)
-            else:
-                tables = [args.table]
-            for table in tables:
-                if table in REFERENCE_GETS:
-                    n = await reference.sync(table)
+    try:
+        async with BrightpearlClient() as bp:
+            if args.command in ("backfill", "sweep"):
+                pipeline = SyncPipeline(bp, bq)
+                resources = list(RESOURCES) if args.resource == "all" else [args.resource]
+                for resource in resources:
+                    n = await pipeline.sync(
+                        resource, incremental=(args.command == "sweep"), limit=args.limit
+                    )
+                    print(f"{resource}: {n} upserted")
+            elif args.command == "dump":
+                searcher = SearchDumpSyncer(bp, bq)
+                reference = ReferenceSyncer(bp, bq)
+                if args.table == "all":
+                    tables = [*REFERENCE_GETS, *SEARCH_DUMPS]
+                elif args.table == "refs":
+                    tables = list(REFERENCE_GETS)
                 else:
-                    n = await searcher.sync(table, full=args.full)
-                print(f"{table}: {n} rows")
-        elif args.command == "webhooks":
-            from .webhooks import list_webhooks, register_webhooks
+                    tables = [args.table]
+                for table in tables:
+                    if table in REFERENCE_GETS:
+                        n = await reference.sync(table)
+                    else:
+                        n = await searcher.sync(table, full=args.full)
+                    print(f"{table}: {n} rows")
+            elif args.command == "webhooks":
+                from .webhooks import list_webhooks, register_webhooks
 
-            if args.action == "register":
-                created = await register_webhooks(bp, args.url)
-                print(f"created subscriptions: {created or '(all already exist)'}")
-            hooks = await list_webhooks(bp)
-            for h in hooks:
-                print({k: h.get(k) for k in ("id", "subscribeTo", "uriTemplate")})
-        elif args.command == "derived":
-            derived = DerivedSyncer(bp, bq)
-            if args.kind in ("prices", "all"):
-                print(f"product_prices: {await derived.sync_prices()} rows")
-            if args.kind in ("availability", "all"):
-                print(f"product_availability: {await derived.sync_availability()} rows")
-            if args.kind in ("suppliers", "all"):
-                print(f"product_suppliers: {await derived.sync_suppliers()} rows")
+                if args.action == "register":
+                    created = await register_webhooks(bp, args.url)
+                    print(f"created subscriptions: {created or '(all already exist)'}")
+                hooks = await list_webhooks(bp)
+                for h in hooks:
+                    print({k: h.get(k) for k in ("id", "subscribeTo", "uriTemplate")})
+            elif args.command == "derived":
+                derived = DerivedSyncer(bp, bq)
+                if args.kind in ("prices", "all"):
+                    print(f"product_prices: {await derived.sync_prices()} rows")
+                if args.kind in ("availability", "all"):
+                    print(f"product_availability: {await derived.sync_availability()} rows")
+                if args.kind in ("suppliers", "all"):
+                    print(f"product_suppliers: {await derived.sync_suppliers()} rows")
+    finally:
+        # sync_state records batch in memory (sync/state.py); persist before
+        # exit even if a later resource in the run failed — the completed
+        # resources' watermarks are real.
+        bq.state.flush()
 
 
 def main() -> None:

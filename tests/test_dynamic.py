@@ -6,6 +6,7 @@ from brightpearl_client import BrightpearlError
 from brightpearl_client.client import SearchPage
 from sync.bq import BigQueryWriter
 from sync.dynamic import SearchDumpSyncer
+from sync.state import SyncStateStore
 
 JOURNAL_COLUMNS = [{"name": "journalRowId", "reportDataType": "INTEGER"}]
 PAYMENT_COLUMNS = [{"name": "paymentId", "reportDataType": "IDSET"}]
@@ -44,14 +45,20 @@ class FakeBQ:
     def __init__(self, watermark_id=None):
         self.watermark_id = watermark_id
         self.upserts: list[tuple[str, list[dict]]] = []
+        self.state = SyncStateStore(self)  # exercises the real cache/batch logic
 
     def _table_ref(self, name):
         return f"p.d.{name}"
 
     def query(self, sql):
+        # Serves the state store's initial sync_state load
         if self.watermark_id is None:
             return []
-        return [{"watermark_id": self.watermark_id, "watermark_updated_on": None}]
+        return [{
+            "resource": "journal_rows",
+            "watermark_id": self.watermark_id,
+            "watermark_updated_on": None,
+        }]
 
     def ensure_table(self, name, schema, cluster_fields=None):
         pass
@@ -69,8 +76,9 @@ class FakeBQ:
             r["journal_row_id"] for name, rows in self.upserts if name == table for r in rows
         }
 
-    def recorded_state(self):
-        return next(rows[0] for name, rows in self.upserts if name == "sync_state")
+    def recorded_state(self, table):
+        # sync_state records buffer in the store until a tick/CLI flush
+        return self.state.get(table)
 
 
 async def test_id_mode_pages_descending_and_stops_at_watermark():
@@ -87,7 +95,7 @@ async def test_id_mode_pages_descending_and_stops_at_watermark():
     assert bp.calls[0] == {"sort": "journalRowId.DESC"}
     assert bq.synced_ids("journal_rows") == {105, 104, 103, 102, 101}
     assert total == 5
-    assert bq.recorded_state()["watermark_id"] == 105
+    assert bq.recorded_state("journal_rows")["watermark_id"] == 105
     # stopped mid-page-2: never requested a third page
     assert len(bp.calls) == 2
 
@@ -101,7 +109,7 @@ async def test_id_mode_first_sync_scans_everything_unfiltered():
 
     assert bp.calls == [{}]
     assert total == 3
-    assert bq.recorded_state()["watermark_id"] == 3
+    assert bq.recorded_state("journal_rows")["watermark_id"] == 3
 
 
 async def test_rejected_sort_falls_back_to_full_scan():
@@ -151,7 +159,7 @@ async def test_page_past_available_ignores_misreported_total():
 
     assert total == 520
     assert len(bp.calls) == 2  # short page 2 ended the scan
-    assert bq.recorded_state()["watermark_id"] == 520
+    assert bq.recorded_state("supplier_payments")["watermark_id"] == 520
 
 
 def _writer_with_fake_client(fake_client) -> BigQueryWriter:

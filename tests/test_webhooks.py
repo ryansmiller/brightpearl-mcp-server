@@ -39,17 +39,62 @@ def test_webhook_parses_idset_and_processes_inline(app):
     fake.process.assert_awaited_once_with("order", [1, 2, 3])
 
 
-def test_webhook_enqueues_task_when_queue_configured(app, monkeypatch):
+def test_webhook_coalesces_burst_into_one_flush_task(app, monkeypatch):
+    """A burst of webhooks for the same resource buffers into one delayed
+    flush task instead of one task (and one BigQuery upsert) per delivery."""
     client, fake = app
     monkeypatch.setenv("TASKS_QUEUE", "projects/p/locations/l/queues/q")
-    created = {}
-    monkeypatch.setattr(webhooks, "_create_task", lambda q, payload: created.update(payload))
-    resp = client.post(
-        "/webhook?token=sekret",
-        json={"resource": "order", "id": "7", "event": "modified"},
+    monkeypatch.setattr(webhooks, "COALESCE_WINDOW", 10)
+    calls = []
+    monkeypatch.setattr(
+        webhooks, "_create_task",
+        lambda q, payload, delay_seconds=0: calls.append((payload, delay_seconds)),
     )
+    r1 = client.post("/webhook?token=sekret",
+                     json={"resource": "order", "id": "7", "event": "modified"})
+    r2 = client.post("/webhook?token=sekret",
+                     json={"resource": "order", "id": "8,9", "event": "modified"})
+    assert r1.json() == {"accepted": 1, "dispatch": "coalesced"}
+    assert r2.json() == {"accepted": 2, "dispatch": "coalesced"}
+    # exactly one flush task for the window; the second delivery folded in
+    assert calls == [({"flush": "order"}, 10)]
+    assert webhooks._pending_ids["order"] == {7, 8, 9}
+    fake.process.assert_not_awaited()
+
+
+def test_flush_task_drains_buffer_in_one_process_call(app, monkeypatch):
+    client, fake = app
+    monkeypatch.setenv("TASKS_QUEUE", "projects/p/locations/l/queues/q")
+    monkeypatch.setattr(webhooks, "COALESCE_WINDOW", 10)
+    monkeypatch.setattr(webhooks, "_create_task", lambda *a, **k: None)
+    client.post("/webhook?token=sekret",
+                json={"resource": "order", "id": "7", "event": "modified"})
+    client.post("/webhook?token=sekret",
+                json={"resource": "order", "id": "8", "event": "modified"})
+    # Cloud Tasks fires the flush; drop the queue env so the local-dev token
+    # path authorizes /process (production is OIDC-only, covered elsewhere).
+    monkeypatch.delenv("TASKS_QUEUE", raising=False)
+    resp = client.post("/process?token=sekret", json={"flush": "order"})
+    assert resp.status_code == 200
+    fake.process.assert_awaited_once_with("order", [7, 8])
+    assert not webhooks._pending_ids.get("order")
+    assert "order" not in webhooks._flush_scheduled
+
+
+def test_webhook_direct_task_when_coalescing_disabled(app, monkeypatch):
+    """WEBHOOK_COALESCE_WINDOW=0 restores one-task-per-delivery behavior."""
+    client, fake = app
+    monkeypatch.setenv("TASKS_QUEUE", "projects/p/locations/l/queues/q")
+    monkeypatch.setattr(webhooks, "COALESCE_WINDOW", 0)
+    calls = []
+    monkeypatch.setattr(
+        webhooks, "_create_task",
+        lambda q, payload, delay_seconds=0: calls.append(payload),
+    )
+    resp = client.post("/webhook?token=sekret",
+                       json={"resource": "order", "id": "7", "event": "modified"})
     assert resp.json() == {"accepted": 1, "dispatch": "queued"}
-    assert created == {"resource": "order", "ids": [7]}
+    assert calls == [{"resource": "order", "ids": [7]}]
     fake.process.assert_not_awaited()
 
 
