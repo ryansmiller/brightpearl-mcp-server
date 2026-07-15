@@ -86,7 +86,7 @@ SEARCH_DUMPS: dict[str, dict] = {
     },
     "contact_groups": {
         "search": ("contact-service", "contact-group"),
-        "key": "id",
+        "key": "contactGroupId",
         "incremental": ("full", None),
         "tier": "cold",
     },
@@ -145,8 +145,11 @@ SEARCH_DUMPS: dict[str, dict] = {
         "tier": "warm",
     },
     "contact_group_members": {
+        # No single id column on this search (it's a contact x group
+        # membership row) — cluster on contactGroupId, the column lookups
+        # actually filter on ("who's in group X").
         "search": ("contact-service", "contact-group-member"),
-        "key": "id",
+        "key": "contactGroupId",
         "incremental": ("full", None),
         "tier": "cold",
     },
