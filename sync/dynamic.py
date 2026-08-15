@@ -213,8 +213,20 @@ _NAME_CANDIDATES = ("name", "code", "description", "title")
 
 
 def _pluck_id(item: dict) -> str | None:
+    """The item's own id — never a foreign key.
+
+    An exact `id` key always wins. The endswith("id") scan is only a fallback
+    for endpoints with no literal id (e.g. contact tags use `tagId`), because
+    payload keys arrive alphabetically and a foreign key like `channelBrandId`
+    or `currencyId` sorts before `id` — scanning first corrupted the channels
+    and price_lists tables for months (2026-08 investigation: every channel
+    stored its *brand* id, fanning sales_flat revenue ~6x).
+    """
+    for k in _ID_CANDIDATES:
+        if k in item:
+            return str(item[k])
     for k in item:
-        if k in _ID_CANDIDATES or k.lower().endswith("id"):
+        if k.lower().endswith("id") and not k.lower().endswith("parentid"):
             return str(item[k])
     return None
 
@@ -223,7 +235,35 @@ def _pluck_name(item: dict) -> str | None:
     for k in _NAME_CANDIDATES:
         if isinstance(item.get(k), str) and item[k]:
             return item[k]
+    # tagName-style keys (contact tags)
+    for k, v in item.items():
+        if k.lower().endswith("name") and isinstance(v, str) and v:
+            return v
+    # Multi-language name objects: {"name": {"format":..., "text": "Cost"}}
+    nested = item.get("name")
+    if isinstance(nested, dict) and isinstance(nested.get("text"), str):
+        return nested["text"]
     return None
+
+
+def _reference_items(payload) -> list[dict]:
+    """Normalize a reference GET payload to a list of item dicts.
+
+    Most endpoints return a list. contact-service/tag instead returns one
+    object keyed by id ({"1": {...}, "10": {...}}) — unwrap its values, or the
+    whole catalog collapses into a single row with a null id (how the
+    contact_tags table sat unusable until 2026-08). Only digit-keyed maps are
+    unwrapped, so a genuine single-object payload never gets shredded.
+    """
+    if isinstance(payload, list):
+        return [i for i in payload if isinstance(i, dict)]
+    if isinstance(payload, dict):
+        if payload and all(
+            k.isdigit() and isinstance(v, dict) for k, v in payload.items()
+        ):
+            return list(payload.values())
+        return [payload]
+    return []
 
 
 class ReferenceSyncer:
@@ -236,7 +276,7 @@ class ReferenceSyncer:
     async def sync(self, table: str) -> int:
         path = REFERENCE_GETS[table]
         payload = await self.bp.get(path)
-        items = payload if isinstance(payload, list) else [payload]
+        items = _reference_items(payload)
         now = _now()
         rows = [
             {

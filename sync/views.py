@@ -65,7 +65,14 @@ VIEWS: dict[str, str] = {
           SAFE_SUBTRACT(r.row_net, SAFE_MULTIPLY(r.quantity, r.item_cost)) AS row_margin
         FROM `{ds}.orders` o
         JOIN `{ds}.order_rows` r USING (order_id)
-        LEFT JOIN `{ds}.channels` ch ON SAFE_CAST(ch.id AS INT64) = o.channel_id
+        -- Deduped subquery: a reference-table reload can never fan out sales
+        -- rows again (2026-08 incident: channels stored brand ids as `id`, 6
+        -- rows shared id 1, and every sale on the main channel counted 6x).
+        LEFT JOIN (
+          SELECT SAFE_CAST(id AS INT64) AS id, ANY_VALUE(name) AS name
+          FROM `{ds}.channels`
+          GROUP BY 1
+        ) ch ON ch.id = o.channel_id
         WHERE o.order_type_code = 'SO' AND NOT IFNULL(o.is_deleted, FALSE)
           AND {reportable_so}
     """,

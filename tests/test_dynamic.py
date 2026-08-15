@@ -195,3 +195,52 @@ def test_dml_does_not_retry_other_bad_requests():
         raise AssertionError("expected BadRequest")
     except BadRequest as e:
         assert "Syntax error" in str(e)
+
+
+# --- reference-GET plucking (2026-08 channels/price_lists/contact_tags corruption) ---
+
+from sync.dynamic import _pluck_id, _pluck_name, _reference_items  # noqa: E402
+
+# Real Brightpearl payload shapes, keys in the alphabetical order the API sends
+CHANNEL_ITEM = {"channelBrandId": 6, "channelTypeId": 2, "id": 17, "name": "Nationwide Fabrics"}
+PRICE_LIST_ITEM = {
+    "code": "COST", "currencyId": 1, "id": 5,
+    "name": {"format": "PLAINTEXT", "languageCode": "en", "text": "Cost"},
+}
+TAG_ITEM = {"tagColor": "#0aa1f5", "tagId": 38, "tagName": "Nationwide Customer", "tagParentId": 0}
+
+
+def test_pluck_id_prefers_exact_id_over_earlier_foreign_keys():
+    # channelBrandId sorts before id; the old first-*id-key scan returned the
+    # brand id, collapsing 21 channels onto 7 ids and fanning sales_flat 6x.
+    assert _pluck_id(CHANNEL_ITEM) == "17"
+    assert _pluck_id(PRICE_LIST_ITEM) == "5"
+
+
+def test_pluck_id_falls_back_to_suffix_scan_when_no_literal_id():
+    assert _pluck_id(TAG_ITEM) == "38"
+    assert _pluck_id({"statusId": 4, "label": "x"}) == "4"
+    assert _pluck_id({"label": "x"}) is None
+
+
+def test_pluck_name_handles_tag_names_and_nested_text():
+    assert _pluck_name(TAG_ITEM) == "Nationwide Customer"
+    # nested multi-language object: exact candidates miss, code wins over text
+    assert _pluck_name(PRICE_LIST_ITEM) == "COST"
+    assert _pluck_name({"name": {"format": "PLAINTEXT", "text": "Cost"}}) == "Cost"
+
+
+def test_reference_items_unwraps_digit_keyed_maps():
+    # contact-service/tag returns {"1": {...}, "38": {...}} — one row per tag,
+    # not one row for the whole catalog.
+    payload = {"1": {"tagId": 1, "tagName": "Customers"}, "38": dict(TAG_ITEM)}
+    items = _reference_items(payload)
+    assert len(items) == 2
+    assert {i["tagId"] for i in items} == {1, 38}
+
+
+def test_reference_items_leaves_lists_and_plain_objects_alone():
+    assert _reference_items([CHANNEL_ITEM, "junk", PRICE_LIST_ITEM]) == [CHANNEL_ITEM, PRICE_LIST_ITEM]
+    single = {"id": 1, "detail": {"a": 1}, "name": "only"}
+    assert _reference_items(single) == [single]
+    assert _reference_items(None) == []
