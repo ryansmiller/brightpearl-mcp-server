@@ -160,6 +160,50 @@ VIEWS: dict[str, str] = {
         LEFT JOIN `{ds}.nominal_codes` n ON n.code = j.nominal_code
         GROUP BY 1, 2, 3, 4
     """,
+    # Cross-era sales fact: current Brightpearl sales (sales_flat) UNION the
+    # one-time legacy Nationwide history, tagged by `source`. Both sides carry
+    # real Brightpearl product/customer ids, so this view joins to products,
+    # contacts, inventory_position, etc. by id exactly like sales_flat does —
+    # "units of SKU X since 2018" or "this customer's lifetime across both
+    # systems" become single-table scans. Nationwide is pre-cutover only
+    # (<= 2026-02-20), so the two sources never overlap and revenue never
+    # double-counts. sales_flat already excludes non-reportable orders; the
+    # Nationwide history is all completed sales.
+    "sales_unified": """
+        SELECT
+          'brightpearl' AS source,
+          CAST(order_id AS STRING) AS order_ref,
+          DATE(placed_on) AS order_date,
+          customer_contact_id AS customer_id,
+          customer_email,
+          customer_company_name AS customer_company,
+          delivery_state AS ship_state,
+          channel_name AS channel,
+          product_id,
+          product_sku AS sku,
+          product_name,
+          quantity,
+          CAST(NULL AS STRING) AS unit_of_measure,
+          row_net AS line_net
+        FROM `{ds}.sales_flat`
+        UNION ALL
+        SELECT
+          'nationwide' AS source,
+          source_order_id AS order_ref,
+          order_date,
+          brightpearl_customer_id AS customer_id,
+          customer_email,
+          customer_company,
+          ship_state,
+          channel,
+          brightpearl_product_id AS product_id,
+          sku,
+          product_name,
+          quantity,
+          unit_of_measure,
+          line_net
+        FROM `{ds}.nationwide_sales`
+    """,
     # One row per product × option × value. The variant assignments already
     # live in each product's raw_payload.variations (synced on every product
     # update), and each entry carries its own optionValue name — so this view
