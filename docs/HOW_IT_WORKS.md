@@ -337,6 +337,24 @@ is tolerated. Any other error — throttle, auth, 5xx, unexpected payload
 shape — aborts the run *before* the truncate, so a flaky API call can never
 replace a good table with a partial snapshot.
 
+### nationwide.py — the one-time legacy import
+
+Everything else in `sync/` keeps a *live* resource fresh. `nationwide.py` is
+the odd one out: a **static, manual load** of the legacy Nationwide Fabric
+Shopify store's sales history (2018 → 2026-02-20, the day before Brightpearl
+started syncing that store — so the two never overlap and revenue never
+double-counts). It reads a hand-prepared CSV whose rows already carry real
+Brightpearl `product_id`/`contact_id` values, validates it (required columns,
+ISO dates, rejects stray spreadsheet `#REF!`/`#N/A` errors with the offending
+row number), synthesizes a `line_uid` per line (`order# + per-order sequence`,
+since the source has no line id), preserves the full source row in
+`raw_payload`, and truncate-loads `nationwide_sales` (month-partitioned on
+`order_date`, clustered on `brightpearl_product_id`). No watermark, no webhook,
+no sweep — rerunning just rewrites the table. The `sales_unified` view
+(`sync/views.py`) UNIONs it with `sales_flat` under a `source` column; because
+both sides carry real Brightpearl ids, it joins to `products`/`contacts` by id
+exactly like `sales_flat` does.
+
 ### cli.py — the entry point
 
 `argparse` = `commander`/`yargs`. Subcommands:
@@ -348,6 +366,8 @@ python -m sync.cli sweep all                 # incremental (detail resources)
 python -m sync.cli dump journal_rows         # search-dump tables
 python -m sync.cli dump refs                 # all reference tables
 python -m sync.cli derived all               # prices + availability
+python -m sync.cli load-nationwide FILE.csv  # one-time legacy sales history
+python -m sync.cli views                     # (re)create semantic views
 python -m sync.cli status                    # sync_state, one line per table
 ```
 

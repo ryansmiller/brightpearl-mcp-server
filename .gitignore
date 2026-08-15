@@ -12,6 +12,10 @@ credentials/
 *.json.key
 service-account*.json
 
+# Legacy sales-history import data — holds customer PII, never commit (public repo)
+Nationwide*.csv
+nationwide_review.csv
+
 # Tooling
 .pytest_cache/
 .ruff_cache/

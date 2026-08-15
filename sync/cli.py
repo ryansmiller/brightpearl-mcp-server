@@ -37,6 +37,14 @@ async def run(args: argparse.Namespace) -> None:
         for name in create_views(bq):
             print(f"view ready: {name}")
         return
+    if args.command == "load-nationwide":
+        from .nationwide import load_nationwide
+
+        stats = load_nationwide(bq, args.path)
+        print(f"loaded {stats['rows']} rows / {stats['orders']} orders into nationwide_sales")
+        for k in ("total_line_net", "min_date", "max_date", "product_lines", "shipping_lines"):
+            print(f"  {k}: {stats[k]}")
+        return
     if args.command == "status":
         rows = bq.query(
             f"SELECT resource, watermark_updated_on, watermark_id, last_run_at, "
@@ -107,6 +115,8 @@ def main() -> None:
     sub.add_parser("init")
     sub.add_parser("status")
     sub.add_parser("views")
+    p = sub.add_parser("load-nationwide")
+    p.add_argument("path", help="path to the Nationwide sales-history CSV")
     for cmd in ("backfill", "sweep"):
         p = sub.add_parser(cmd)
         p.add_argument("resource", choices=[*RESOURCES, "all"])
