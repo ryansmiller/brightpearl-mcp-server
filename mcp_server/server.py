@@ -62,19 +62,23 @@ mcp = FastMCP(
     "brightpearl",
     instructions=(
         "East Coast Fabrics' Brightpearl ERP data. Prefer the semantic views "
-        "(sales_flat, inventory_position, po_pipeline, customer_summary, "
+        "(sales_unified, sales_flat, inventory_position, po_pipeline, customer_summary, "
         "monthly_financials, product_variations) via run_bigquery_sql for anything the dedicated "
         "tools don't cover. Sales, revenue, and customer questions MUST be "
-        "answered from sales_flat or customer_summary, never the raw orders "
-        "table: the views exclude quotes, drafts, pending, and cancelled "
-        "orders that Brightpearl stores as sales orders but that are not real "
-        "sales. For sales analysis that should include the pre-Brightpearl era "
-        "(the legacy Nationwide Fabric Shopify store, 2018 through 2026-02-20), "
-        "use the sales_unified view: it UNIONs sales_flat with the one-time "
-        "nationwide_sales history, tagged by a `source` column, with no date "
-        "overlap. It carries real Brightpearl product/customer ids, so join it "
-        "to products/contacts by id like sales_flat. Call get_schema first when "
-        "writing SQL. Data is synced "
+        "answered from these views, never the raw orders table: they exclude "
+        "quotes, drafts, pending, and cancelled orders that Brightpearl stores "
+        "as sales orders but that are not real sales. IMPORTANT — history spans "
+        "two eras: current Brightpearl AND a one-time legacy Nationwide Fabric "
+        "Shopify store (2018 through 2026-02-20, no date overlap). The "
+        "sales_unified view covers BOTH (tagged by a `source` column) and is the "
+        "default for any sales/customer question; sales_flat is Brightpearl-only "
+        "(use it when you specifically need margin/cost, which the legacy data "
+        "lacks). The query_sales and search_customers tools already read "
+        "sales_unified, so a legacy-only customer with no Brightpearl orders "
+        "still shows real sales — do not conclude 'no sales history' from a "
+        "Brightpearl-only source. sales_unified carries real Brightpearl "
+        "product/customer ids, so join it to products/contacts by id. Call "
+        "get_schema first when writing SQL. Data is synced "
         "near-real-time; check get_data_freshness when currency matters. "
         "For this-second answers use the *_live tools."
     ),
@@ -251,43 +255,62 @@ def query_sales(
     end_date: str,
     group_by: str = "month",
     top_n: int = 25,
+    source: str = "all",
 ) -> str:
-    """Sales rollup between two dates (YYYY-MM-DD), from the sales_flat view.
+    """Sales rollup between two dates (YYYY-MM-DD), from the sales_unified view.
 
-    group_by: one of month | product | sku | customer | channel | state
-    Returns revenue (net), quantity, order count, and margin per group.
-    Pending-status and cancelled orders are already excluded.
+    Spans BOTH eras: current Brightpearl sales and the one-time legacy
+    Nationwide Fabric history (2018 → 2026-02-20). This is why a legacy-only
+    customer that looks like it has no sales in Brightpearl still shows revenue
+    here. Pending/draft/cancelled orders are already excluded.
+
+    group_by: one of month | product | sku | customer | channel | state | source
+    source:   all (default) | brightpearl | nationwide  — restrict the era
+    Returns revenue (net), quantity, and order count per group. (Margin/cost is
+    Brightpearl-only — for margin, run_bigquery_sql on the sales_flat view.)
     """
     dims = {
-        "month": "FORMAT_DATE('%Y-%m', DATE(placed_on))",
+        "month": "FORMAT_DATE('%Y-%m', order_date)",
         "product": "product_name",
-        "sku": "product_sku",
-        "customer": "customer_company_name",
-        "channel": "channel_name",
-        "state": "delivery_state",
+        "sku": "sku",
+        "customer": "customer_company",
+        "channel": "channel",
+        "state": "ship_state",
+        "source": "source",
     }
     if group_by not in dims:
         return f"Error: group_by must be one of {list(dims)}"
+    if source not in ("all", "brightpearl", "nationwide"):
+        return "Error: source must be one of ['all', 'brightpearl', 'nationwide']"
     top_n = max(1, min(top_n, MAX_ROWS))
+    params = [
+        bigquery.ScalarQueryParameter("start", "DATE", start_date),
+        bigquery.ScalarQueryParameter("end", "DATE", end_date),
+        bigquery.ScalarQueryParameter("top_n", "INT64", top_n),
+    ]
+    source_filter = ""
+    if source != "all":
+        source_filter = "AND source = @source"
+        params.append(bigquery.ScalarQueryParameter("source", "STRING", source))
     rows = _query(
         f"""
         SELECT {dims[group_by]} AS {group_by},
-               ROUND(SUM(row_net), 2) AS revenue,
+               ROUND(SUM(line_net), 2) AS revenue,
                ROUND(SUM(quantity), 1) AS quantity,
-               COUNT(DISTINCT order_id) AS orders,
-               ROUND(SUM(row_margin), 2) AS margin
-        FROM `{PROJECT}.{DATASET}.sales_flat`
-        WHERE DATE(placed_on) BETWEEN @start AND @end
+               COUNT(DISTINCT order_ref) AS orders
+        FROM `{PROJECT}.{DATASET}.sales_unified`
+        WHERE order_date BETWEEN @start AND @end
+        {source_filter}
         GROUP BY 1 ORDER BY revenue DESC
         LIMIT @top_n
         """,
-        [
-            bigquery.ScalarQueryParameter("start", "DATE", start_date),
-            bigquery.ScalarQueryParameter("end", "DATE", end_date),
-            bigquery.ScalarQueryParameter("top_n", "INT64", top_n),
-        ],
+        params,
     )
-    _audit("query_sales", {"start": start_date, "end": end_date, "group_by": group_by}, True)
+    _audit(
+        "query_sales",
+        {"start": start_date, "end": end_date, "group_by": group_by, "source": source},
+        True,
+    )
     return _rows_to_result(rows)
 
 
@@ -320,15 +343,40 @@ def get_stock_levels(search: str, warehouse_id: int | None = None) -> str:
 
 @mcp.tool
 def search_customers(query: str) -> str:
-    """Find customers by name, email, or company, with lifetime order stats."""
+    """Find customers by name, email, or company, with lifetime order stats.
+
+    Lifetime stats span BOTH eras via sales_unified (current Brightpearl + the
+    legacy Nationwide Fabric history), so a customer whose only orders are
+    pre-Brightpearl still shows a real lifetime value here. The `sources` column
+    names which era(s) a customer has ('brightpearl', 'nationwide', or both);
+    lifetime_value is net revenue.
+    """
     rows = _query(
         f"""
-        SELECT contact_id, first_name, last_name, email, organisation_name,
-               order_count, ROUND(lifetime_value, 2) AS lifetime_value,
-               CAST(last_order_on AS STRING) AS last_order_on, days_since_last_order
-        FROM `{PROJECT}.{DATASET}.customer_summary`
-        WHERE LOWER(CONCAT(IFNULL(first_name,''),' ',IFNULL(last_name,''),' ',
-                    IFNULL(email,''),' ',IFNULL(organisation_name,''))) LIKE LOWER(@q)
+        WITH matched AS (
+          SELECT contact_id, first_name, last_name, email, organisation_name
+          FROM `{PROJECT}.{DATASET}.contacts`
+          WHERE NOT IFNULL(is_deleted, FALSE)
+            AND LOWER(CONCAT(IFNULL(first_name,''),' ',IFNULL(last_name,''),' ',
+                      IFNULL(email,''),' ',IFNULL(organisation_name,''))) LIKE LOWER(@q)
+        ),
+        stats AS (
+          SELECT customer_id,
+                 COUNT(DISTINCT order_ref) AS order_count,
+                 ROUND(SUM(line_net), 2) AS lifetime_value,
+                 MAX(order_date) AS last_order_on,
+                 STRING_AGG(DISTINCT source ORDER BY source) AS sources
+          FROM `{PROJECT}.{DATASET}.sales_unified`
+          WHERE customer_id IN (SELECT contact_id FROM matched)
+          GROUP BY customer_id
+        )
+        SELECT m.contact_id, m.first_name, m.last_name, m.email, m.organisation_name,
+               IFNULL(s.order_count, 0) AS order_count,
+               IFNULL(s.lifetime_value, 0) AS lifetime_value,
+               CAST(s.last_order_on AS STRING) AS last_order_on,
+               DATE_DIFF(CURRENT_DATE(), s.last_order_on, DAY) AS days_since_last_order,
+               IFNULL(s.sources, '') AS sources
+        FROM matched m LEFT JOIN stats s ON s.customer_id = m.contact_id
         ORDER BY lifetime_value DESC NULLS LAST LIMIT 50
         """,
         [bigquery.ScalarQueryParameter("q", "STRING", f"%{query}%")],
