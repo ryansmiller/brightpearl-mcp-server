@@ -44,7 +44,7 @@ def _build_auth():
     if os.environ.get("MCP_TRANSPORT") != "http":
         return None
     from fastmcp.server.auth.providers.google import GoogleProvider
-    from key_value.aio.stores.firestore import FirestoreStore
+    from key_value.aio.stores.firestore import FirestoreStore, FirestoreV1KeySanitizationStrategy
 
     return GoogleProvider(
         client_id=os.environ["GOOGLE_OAUTH_CLIENT_ID"],
@@ -54,7 +54,14 @@ def _build_auth():
         # Cloud Run disk is ephemeral: FastMCP's default file-tree store would
         # forget client registrations and refresh tokens on every cold start
         # and send everyone back through the browser. Firestore persists them.
-        client_storage=FirestoreStore(project=PROJECT, default_collection="mcp_oauth"),
+        # Claude Code registers with a URL client_id (a client ID metadata
+        # document), and '/' isn't allowed in Firestore document ids. The
+        # sanitizer rewrites only invalid ids, so existing keys are unchanged.
+        client_storage=FirestoreStore(
+            project=PROJECT,
+            default_collection="mcp_oauth",
+            key_sanitization_strategy=FirestoreV1KeySanitizationStrategy(),
+        ),
     )
 
 
